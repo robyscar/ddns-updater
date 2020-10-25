@@ -2,6 +2,7 @@ package settings
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"net"
@@ -26,7 +27,8 @@ type azure struct {
 	relativeRecordSetName string
 }
 
-func NewAzure(data json.RawMessage, domain, host string, ipVersion models.IPVersion, noDNSLookup bool, matcher regex.Matcher) (s Settings, err error) {
+func NewAzure(data json.RawMessage, domain, host string, ipVersion models.IPVersion,
+	noDNSLookup bool, matcher regex.Matcher) (s Settings, err error) {
 	extraSettings := struct {
 		SubscriptionID        string `json:"subscription_id"`
 		ResourceGroupName     string `json:"resource_group_name"`
@@ -99,7 +101,7 @@ func (a *azure) HTML() models.HTMLRow {
 	}
 }
 
-func (a *azure) Update(client netlib.Client, ip net.IP) (newIP net.IP, err error) {
+func (a *azure) Update(ctx context.Context, client netlib.Client, ip net.IP) (newIP net.IP, err error) {
 	// https://docs.microsoft.com/en-us/rest/api/dns/recordsets/update#uri-parameters
 	// https://management.azure.com/subscriptions/subid/resourceGroups/rg1/providers/Microsoft.Network/dnsZones/zone1/A/record1?api-version=2018-05-01
 	// PATCH https://management.azure.com/subscriptions/{subscriptionId}/resourceGroups/{resourceGroupName}/providers/Microsoft.Network/dnsZones/{zoneName}/{recordType}/{relativeRecordSetName}?api-version=2018-05-01
@@ -108,7 +110,7 @@ func (a *azure) Update(client netlib.Client, ip net.IP) (newIP net.IP, err error
 		recordType = AAAA
 	}
 
-	path := fmt.Sprintf("/subscriptions/%s/resourceGroups/%s/providers/Microsoft.Network/dnsZones/%s/%s/%s?api-version=2018-05-01",
+	path := fmt.Sprintf("/subscriptions/%s/resourceGroups/%s/providers/Microsoft.Network/dnsZones/%s/%s/%s?api-version=2018-05-01", //nolint:lll
 		a.subscriptionID, a.resourceGroupName, a.zoneName, recordType, a.relativeRecordSetName)
 	values := url.Values{}
 	values.Set("api-version", "2018-05-01")
@@ -145,12 +147,12 @@ func (a *azure) Update(client netlib.Client, ip net.IP) (newIP net.IP, err error
 	}
 	requestBuffer := bytes.NewBuffer(requestBytes)
 
-	r, err := http.NewRequest(http.MethodPatch, u.String(), requestBuffer)
+	r, err := http.NewRequestWithContext(ctx, http.MethodPatch, u.String(), requestBuffer)
 	if err != nil {
 		return nil, err
 	}
 	r.Header.Set("User-Agent", "DDNS-Updater quentia.mcgaw@gmail.com")
-	status, content, err := client.DoHTTPRequest(r)
+	content, status, err := client.Do(r)
 	if err != nil {
 		return nil, err
 	} else if status != http.StatusOK {
@@ -164,7 +166,7 @@ func (a *azure) Update(client netlib.Client, ip net.IP) (newIP net.IP, err error
 			Error cloudErrorBody `json:"error"`
 		}
 		if err := json.Unmarshal(content, &response); err != nil {
-			return nil, fmt.Errorf("HTTP status %d: cannot decode error response: %w", status, err)
+			return nil, fmt.Errorf("%s: cannot decode error response: %w", http.StatusText(status), err)
 		}
 		return nil, fmt.Errorf("%s: %s (target: %s)", response.Error.Code, response.Error.Message, response.Error.Target)
 	}
