@@ -103,14 +103,12 @@ func (a *azure) HTML() models.HTMLRow {
 
 func (a *azure) Update(ctx context.Context, client netlib.Client, ip net.IP) (newIP net.IP, err error) {
 	// https://docs.microsoft.com/en-us/rest/api/dns/recordsets/update#uri-parameters
-	// https://management.azure.com/subscriptions/subid/resourceGroups/rg1/providers/Microsoft.Network/dnsZones/zone1/A/record1?api-version=2018-05-01
-	// PATCH https://management.azure.com/subscriptions/{subscriptionId}/resourceGroups/{resourceGroupName}/providers/Microsoft.Network/dnsZones/{zoneName}/{recordType}/{relativeRecordSetName}?api-version=2018-05-01
 	recordType := A
 	if ip.To4() == nil {
 		recordType = AAAA
 	}
 
-	path := fmt.Sprintf("/subscriptions/%s/resourceGroups/%s/providers/Microsoft.Network/dnsZones/%s/%s/%s?api-version=2018-05-01", //nolint:lll
+	path := fmt.Sprintf("/subscriptions/%s/resourceGroups/%s/providers/Microsoft.Network/dnsZones/%s/%s/%s", //nolint:lll
 		a.subscriptionID, a.resourceGroupName, a.zoneName, recordType, a.relativeRecordSetName)
 	values := url.Values{}
 	values.Set("api-version", "2018-05-01")
@@ -137,9 +135,13 @@ func (a *azure) Update(ctx context.Context, client netlib.Client, ip net.IP) (ne
 	}
 	requestBody := recordSet{}
 	if recordType == A {
-		requestBody.Properties.ARecords = append(requestBody.Properties.ARecords, ARecord{IPv4Address: ip.String()})
+		requestBody.Properties.ARecords = append(
+			requestBody.Properties.ARecords,
+			ARecord{IPv4Address: ip.String()})
 	} else {
-		requestBody.Properties.AAAARecords = append(requestBody.Properties.AAAARecords, AAAARecord{IPv6Address: ip.String()})
+		requestBody.Properties.AAAARecords = append(
+			requestBody.Properties.AAAARecords,
+			AAAARecord{IPv6Address: ip.String()})
 	}
 	requestBytes, err := json.Marshal(requestBody)
 	if err != nil {
