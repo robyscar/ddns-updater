@@ -102,7 +102,6 @@ func (a *azure) HTML() models.HTMLRow {
 }
 
 func (a *azure) Update(ctx context.Context, client netlib.Client, ip net.IP) (newIP net.IP, err error) {
-	// https://docs.microsoft.com/en-us/rest/api/dns/recordsets/update#uri-parameters
 	recordType := A
 	if ip.To4() == nil {
 		recordType = AAAA
