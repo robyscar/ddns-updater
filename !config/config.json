@@ -1,0 +1,10 @@
+{
+     "settings": [
+         {
+             "provider": "namecheap",
+             "domain": "robyscar.xyz",
+             "host": "@",
+             "password": "fc1538d6daf040f0ad1818ef7427d169"
+         }
+     ]
+}
