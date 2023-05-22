@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -23,16 +22,17 @@ import (
 	"github.com/qdm12/ddns-updater/internal/health"
 	"github.com/qdm12/ddns-updater/internal/models"
 	jsonparams "github.com/qdm12/ddns-updater/internal/params"
-	"github.com/qdm12/ddns-updater/internal/persistence"
+	persistence "github.com/qdm12/ddns-updater/internal/persistence/json"
 	recordslib "github.com/qdm12/ddns-updater/internal/records"
+	"github.com/qdm12/ddns-updater/internal/resolver"
 	"github.com/qdm12/ddns-updater/internal/server"
 	"github.com/qdm12/ddns-updater/internal/update"
 	"github.com/qdm12/ddns-updater/pkg/publicip"
 	"github.com/qdm12/golibs/connectivity"
-	"github.com/qdm12/golibs/logging"
 	"github.com/qdm12/golibs/params"
 	"github.com/qdm12/goshutdown"
 	"github.com/qdm12/gosplash"
+	"github.com/qdm12/log"
 )
 
 //nolint:gochecknoglobals
@@ -49,7 +49,7 @@ func main() {
 		BuildDate: buildDate,
 	}
 	env := params.New()
-	logger := logging.New(logging.Settings{Writer: os.Stdout})
+	logger := log.New()
 
 	ctx := context.Background()
 	ctx, stop := signal.NotifyContext(ctx, syscall.SIGINT, syscall.SIGTERM, os.Interrupt)
@@ -96,7 +96,7 @@ var (
 	errShoutrrrSetup = errors.New("failed setting up Shoutrrr")
 )
 
-func _main(ctx context.Context, env params.Interface, args []string, logger logging.ParentLogger,
+func _main(ctx context.Context, env params.Interface, args []string, logger log.LoggerInterface,
 	buildInfo models.BuildInformation, timeNow func() time.Time) (err error) {
 	if health.IsClientMode(args) {
 		// Running the program in a separate instance through the Docker
@@ -108,10 +108,7 @@ func _main(ctx context.Context, env params.Interface, args []string, logger logg
 		if err != nil {
 			return err
 		}
-		if err := client.Query(ctx, healthConfig.Port); err != nil {
-			return err
-		}
-		return nil
+		return client.Query(ctx, healthConfig.Port)
 	}
 
 	announcementExp, err := time.Parse(time.RFC3339, "2021-07-22T00:00:00Z")
@@ -145,14 +142,15 @@ func _main(ctx context.Context, env params.Interface, args []string, logger logg
 	}
 
 	// Setup logger
-	loggerSettings := logging.Settings{
-		Level:  config.Logger.Level,
-		Caller: config.Logger.Caller}
-	logger = logging.New(loggerSettings)
+	options := []log.Option{log.SetLevel(config.Logger.Level)}
+	if config.Logger.Caller {
+		options = append(options, log.SetCallerFile(true), log.SetCallerLine(true))
+	}
+	logger.Patch(options...)
 
 	sender, err := shoutrrr.CreateSender(config.Shoutrrr.Addresses...)
 	if err != nil {
-		return fmt.Errorf("%w: %s", errShoutrrrSetup, err)
+		return fmt.Errorf("%w: %w", errShoutrrrSetup, err)
 	}
 	notify := func(message string) {
 		errs := sender.Send(message, &config.Shoutrrr.Params)
@@ -164,7 +162,7 @@ func _main(ctx context.Context, env params.Interface, args []string, logger logg
 		}
 	}
 
-	persistentDB, err := persistence.NewJSON(config.Paths.DataDir)
+	persistentDB, err := persistence.NewDatabase(config.Paths.DataDir)
 	if err != nil {
 		notify(err.Error())
 		return err
@@ -194,7 +192,8 @@ func _main(ctx context.Context, env params.Interface, args []string, logger logg
 	client := &http.Client{Timeout: config.Client.Timeout}
 
 	connectivity := connectivity.NewHTTPSGetChecker(client, http.StatusOK)
-	if err := connectivity.Check(ctx, "https://github.com"); err != nil {
+	err = connectivity.Check(ctx, "https://github.com")
+	if err != nil {
 		logger.Warn(err.Error())
 	}
 
@@ -213,7 +212,8 @@ func _main(ctx context.Context, env params.Interface, args []string, logger logg
 	defer client.CloseIdleConnections()
 	db := data.NewDatabase(records, persistentDB)
 	defer func() {
-		if err := db.Close(); err != nil {
+		err := db.Close()
+		if err != nil {
 			logger.Error(err.Error())
 		}
 	}()
@@ -225,9 +225,14 @@ func _main(ctx context.Context, env params.Interface, args []string, logger logg
 		return err
 	}
 
+	resolver, err := resolver.New(config.Resolver)
+	if err != nil {
+		return fmt.Errorf("creating resolver: %w", err)
+	}
+
 	updater := update.NewUpdater(db, client, notify, logger)
 	runner := update.NewRunner(db, updater, ipGetter, config.Update.Period,
-		config.IPv6.Mask, config.Update.Cooldown, logger, timeNow)
+		config.IPv6.Mask, config.Update.Cooldown, logger, resolver, timeNow)
 
 	runnerHandler, runnerCtx, runnerDone := goshutdown.NewGoRoutineHandler("runner")
 	go runner.Run(runnerCtx, runnerDone)
@@ -236,38 +241,45 @@ func _main(ctx context.Context, env params.Interface, args []string, logger logg
 	// no need to collect the resulting errors.
 	go runner.ForceUpdate(ctx)
 
-	isHealthy := health.MakeIsHealthy(db, net.LookupIP, logger)
+	isHealthy := health.MakeIsHealthy(db, resolver)
+	healthLogger := logger.New(log.SetComponent("healthcheck server"))
 	healthServer := health.NewServer(config.Health.ServerAddress,
-		logger.NewChild(logging.Settings{Prefix: "healthcheck server: "}),
-		isHealthy)
+		healthLogger, isHealthy)
 	healthServerHandler, healthServerCtx, healthServerDone := goshutdown.NewGoRoutineHandler("health server")
 	go healthServer.Run(healthServerCtx, healthServerDone)
 
 	address := ":" + strconv.Itoa(int(config.Server.Port))
-	serverLogger := logger.NewChild(logging.Settings{Prefix: "http server: "})
+	serverLogger := logger.New(log.SetComponent("http server"))
 	server := server.New(ctx, address, config.Server.RootURL, db, serverLogger, runner)
 	serverHandler, serverCtx, serverDone := goshutdown.NewGoRoutineHandler("server")
 	go server.Run(serverCtx, serverDone)
 	notify("Launched with " + strconv.Itoa(len(records)) + " records to watch")
 
 	backupHandler, backupCtx, backupDone := goshutdown.NewGoRoutineHandler("backup")
+	backupLogger := logger.New(log.SetComponent("backup"))
 	go backupRunLoop(backupCtx, backupDone, config.Backup.Period, config.Paths.DataDir, config.Backup.Directory,
-		logger.NewChild(logging.Settings{Prefix: "backup: "}), timeNow)
+		backupLogger, timeNow)
 
 	shutdownGroup := goshutdown.NewGroupHandler("")
 	shutdownGroup.Add(runnerHandler, healthServerHandler, serverHandler, backupHandler)
 
 	<-ctx.Done()
 
-	if err := shutdownGroup.Shutdown(context.Background()); err != nil {
+	err = shutdownGroup.Shutdown(context.Background())
+	if err != nil {
 		notify(err.Error())
 		return err
 	}
 	return nil
 }
 
+type InfoErroer interface {
+	Info(s string)
+	Error(s string)
+}
+
 func backupRunLoop(ctx context.Context, done chan<- struct{}, backupPeriod time.Duration,
-	dataDir, outputDir string, logger logging.Logger, timeNow func() time.Time) {
+	dataDir, outputDir string, logger InfoErroer, timeNow func() time.Time) {
 	defer close(done)
 	if backupPeriod == 0 {
 		logger.Info("disabled")
@@ -280,11 +292,12 @@ func backupRunLoop(ctx context.Context, done chan<- struct{}, backupPeriod time.
 	for {
 		fileName := "ddns-updater-backup-" + strconv.Itoa(int(timeNow().UnixNano())) + ".zip"
 		zipFilepath := filepath.Join(outputDir, fileName)
-		if err := ziper.ZipFiles(
+		err := ziper.ZipFiles(
 			zipFilepath,
 			filepath.Join(dataDir, "updates.json"),
 			filepath.Join(dataDir, "config.json"),
-		); err != nil {
+		)
+		if err != nil {
 			logger.Error(err.Error())
 		}
 		select {

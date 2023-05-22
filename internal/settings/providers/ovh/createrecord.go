@@ -11,7 +11,7 @@ import (
 	"github.com/qdm12/ddns-updater/internal/settings/errors"
 )
 
-func (p *provider) createRecord(ctx context.Context, client *http.Client,
+func (p *Provider) createRecord(ctx context.Context, client *http.Client,
 	recordType, subdomain, ipStr string, timestamp int64) (err error) {
 	u := url.URL{
 		Scheme: p.apiURL.Scheme,
@@ -29,12 +29,12 @@ func (p *provider) createRecord(ctx context.Context, client *http.Client,
 	}
 	bodyBytes, err := json.Marshal(postRecordsParams)
 	if err != nil {
-		return fmt.Errorf("%w: %s", errors.ErrRequestMarshal, err)
+		return fmt.Errorf("%w: %w", errors.ErrRequestMarshal, err)
 	}
 
 	request, err := http.NewRequestWithContext(ctx, http.MethodPost, u.String(), bytes.NewBuffer(bodyBytes))
 	if err != nil {
-		return fmt.Errorf("%w: %s", errors.ErrBadRequest, err)
+		return fmt.Errorf("%w: %w", errors.ErrBadRequest, err)
 	}
 	request.Header.Add("Content-Type", "application/json;charset=utf-8")
 	p.setHeaderCommon(request.Header)
@@ -42,7 +42,7 @@ func (p *provider) createRecord(ctx context.Context, client *http.Client,
 
 	response, err := client.Do(request)
 	if err != nil {
-		return fmt.Errorf("%w: %s", errors.ErrUnsuccessfulResponse, err)
+		return fmt.Errorf("%w: %w", errors.ErrUnsuccessfulResponse, err)
 	}
 
 	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {

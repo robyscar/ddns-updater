@@ -4,35 +4,32 @@ import (
 	"context"
 	"net/http"
 	"time"
-
-	"github.com/qdm12/ddns-updater/internal/data"
-	"github.com/qdm12/ddns-updater/internal/update"
-	"github.com/qdm12/golibs/logging"
 )
 
-type Server interface {
-	Run(ctx context.Context, done chan<- struct{})
-}
-
-type server struct {
+type Server struct {
 	address string
-	logger  logging.Logger
+	logger  Logger
 	handler http.Handler
 }
 
-func New(ctx context.Context, address, rootURL string, db data.Database, logger logging.Logger,
-	runner update.Runner) Server {
+func New(ctx context.Context, address, rootURL string, db Database,
+	logger Logger, runner UpdateForcer) *Server {
 	handler := newHandler(ctx, rootURL, db, runner)
-	return &server{
+	return &Server{
 		address: address,
 		logger:  logger,
 		handler: handler,
 	}
 }
 
-func (s *server) Run(ctx context.Context, done chan<- struct{}) {
+func (s *Server) Run(ctx context.Context, done chan<- struct{}) {
 	defer close(done)
-	server := http.Server{Addr: s.address, Handler: s.handler}
+	server := http.Server{
+		Addr:              s.address,
+		Handler:           s.handler,
+		ReadHeaderTimeout: time.Second,
+		ReadTimeout:       time.Second,
+	}
 	go func() {
 		<-ctx.Done()
 		s.logger.Warn("shutting down (context canceled)")
@@ -40,7 +37,8 @@ func (s *server) Run(ctx context.Context, done chan<- struct{}) {
 		const shutdownGraceDuration = 2 * time.Second
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownGraceDuration)
 		defer cancel()
-		if err := server.Shutdown(shutdownCtx); err != nil {
+		err := server.Shutdown(shutdownCtx)
+		if err != nil {
 			s.logger.Error("failed shutting down: " + err.Error())
 		}
 	}()

@@ -8,10 +8,10 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strings"
 
 	"github.com/qdm12/ddns-updater/internal/models"
-	"github.com/qdm12/ddns-updater/internal/regex"
 	"github.com/qdm12/ddns-updater/internal/settings/constants"
 	"github.com/qdm12/ddns-updater/internal/settings/errors"
 	"github.com/qdm12/ddns-updater/internal/settings/headers"
@@ -20,7 +20,7 @@ import (
 	"github.com/qdm12/golibs/verification"
 )
 
-type provider struct {
+type Provider struct {
 	domain         string
 	host           string
 	ipVersion      ipversion.IPVersion
@@ -31,11 +31,10 @@ type provider struct {
 	zoneIdentifier string
 	proxied        bool
 	ttl            uint
-	matcher        regex.Matcher
 }
 
-func New(data json.RawMessage, domain, host string, ipVersion ipversion.IPVersion,
-	matcher regex.Matcher) (p *provider, err error) {
+func New(data json.RawMessage, domain, host string,
+	ipVersion ipversion.IPVersion) (p *Provider, err error) {
 	extraSettings := struct {
 		Key            string `json:"key"`
 		Token          string `json:"token"`
@@ -45,10 +44,11 @@ func New(data json.RawMessage, domain, host string, ipVersion ipversion.IPVersio
 		Proxied        bool   `json:"proxied"`
 		TTL            uint   `json:"ttl"`
 	}{}
-	if err := json.Unmarshal(data, &extraSettings); err != nil {
+	err = json.Unmarshal(data, &extraSettings)
+	if err != nil {
 		return nil, err
 	}
-	p = &provider{
+	p = &Provider{
 		domain:         domain,
 		host:           host,
 		ipVersion:      ipVersion,
@@ -59,63 +59,68 @@ func New(data json.RawMessage, domain, host string, ipVersion ipversion.IPVersio
 		zoneIdentifier: extraSettings.ZoneIdentifier,
 		proxied:        extraSettings.Proxied,
 		ttl:            extraSettings.TTL,
-		matcher:        matcher,
 	}
-	if err := p.isValid(); err != nil {
+	err = p.isValid()
+	if err != nil {
 		return nil, err
 	}
 	return p, nil
 }
 
-func (p *provider) isValid() error {
+var (
+	keyRegex            = regexp.MustCompile(`^[a-zA-Z0-9]+$`)
+	userServiceKeyRegex = regexp.MustCompile(`^v1\.0.+$`)
+)
+
+func (p *Provider) isValid() error {
 	switch {
-	case len(p.key) > 0: // email and key must be provided
+	case p.key != "": // email and key must be provided
 		switch {
-		case !p.matcher.CloudflareKey(p.key):
-			return errors.ErrMalformedKey
+		case !keyRegex.MatchString(p.key):
+			return fmt.Errorf("%w", errors.ErrMalformedKey)
 		case !verification.NewVerifier().MatchEmail(p.email):
-			return errors.ErrMalformedEmail
+			return fmt.Errorf("%w", errors.ErrMalformedEmail)
 		}
-	case len(p.userServiceKey) > 0: // only user service key
-		if !p.matcher.CloudflareKey(p.key) {
-			return errors.ErrMalformedUserServiceKey
+	case p.userServiceKey != "": // only user service key
+		if !userServiceKeyRegex.MatchString(p.userServiceKey) {
+			return fmt.Errorf("%w", errors.ErrMalformedUserServiceKey)
 		}
 	default: // constants.API token only
 	}
 	switch {
-	case len(p.zoneIdentifier) == 0:
-		return errors.ErrEmptyZoneIdentifier
+	case p.zoneIdentifier == "":
+		return fmt.Errorf("%w", errors.ErrEmptyZoneIdentifier)
 	case p.ttl == 0:
-		return errors.ErrEmptyTTL
+		return fmt.Errorf("%w", errors.ErrEmptyTTL)
 	}
 	return nil
 }
 
-func (p *provider) String() string {
+func (p *Provider) String() string {
 	return utils.ToString(p.domain, p.host, constants.Cloudflare, p.ipVersion)
 }
 
-func (p *provider) Domain() string {
+func (p *Provider) Domain() string {
 	return p.domain
 }
 
-func (p *provider) Host() string {
+func (p *Provider) Host() string {
 	return p.host
 }
 
-func (p *provider) IPVersion() ipversion.IPVersion {
+func (p *Provider) IPVersion() ipversion.IPVersion {
 	return p.ipVersion
 }
 
-func (p *provider) Proxied() bool {
+func (p *Provider) Proxied() bool {
 	return p.proxied
 }
 
-func (p *provider) BuildDomainName() string {
+func (p *Provider) BuildDomainName() string {
 	return utils.BuildDomainName(p.host, p.domain)
 }
 
-func (p *provider) HTML() models.HTMLRow {
+func (p *Provider) HTML() models.HTMLRow {
 	return models.HTMLRow{
 		Domain:    models.HTML(fmt.Sprintf("<a href=\"http://%s\">%s</a>", p.BuildDomainName(), p.BuildDomainName())),
 		Host:      models.HTML(p.Host()),
@@ -124,16 +129,16 @@ func (p *provider) HTML() models.HTMLRow {
 	}
 }
 
-func (p *provider) setHeaders(request *http.Request) {
+func (p *Provider) setHeaders(request *http.Request) {
 	headers.SetUserAgent(request)
 	headers.SetContentType(request, "application/json")
 	headers.SetAccept(request, "application/json")
 	switch {
-	case len(p.token) > 0:
+	case p.token != "":
 		headers.SetAuthBearer(request, p.token)
-	case len(p.userServiceKey) > 0:
+	case p.userServiceKey != "":
 		request.Header.Set("X-Auth-User-Service-Key", p.userServiceKey)
-	case len(p.email) > 0 && len(p.key) > 0:
+	case p.email != "" && p.key != "":
 		request.Header.Set("X-Auth-Email", p.email)
 		request.Header.Set("X-Auth-Key", p.key)
 	}
@@ -141,7 +146,7 @@ func (p *provider) setHeaders(request *http.Request) {
 
 // Obtain domain ID.
 // See https://api.cloudflare.com/#dns-records-for-a-zone-list-dns-records.
-func (p *provider) getRecordID(ctx context.Context, client *http.Client, newIP net.IP) (
+func (p *Provider) getRecordID(ctx context.Context, client *http.Client, newIP net.IP) (
 	identifier string, upToDate bool, err error) {
 	recordType := constants.A
 	if newIP.To4() == nil {
@@ -186,8 +191,9 @@ func (p *provider) getRecordID(ctx context.Context, client *http.Client, newIP n
 			Content string `json:"content"`
 		} `json:"result"`
 	}{}
-	if err := decoder.Decode(&listRecordsResponse); err != nil {
-		return "", false, fmt.Errorf("%w: %s", errors.ErrUnmarshalResponse, err)
+	err = decoder.Decode(&listRecordsResponse)
+	if err != nil {
+		return "", false, fmt.Errorf("%w: %w", errors.ErrUnmarshalResponse, err)
 	}
 
 	switch {
@@ -195,9 +201,9 @@ func (p *provider) getRecordID(ctx context.Context, client *http.Client, newIP n
 		return "", false, fmt.Errorf("%w: %s",
 			errors.ErrUnsuccessfulResponse, strings.Join(listRecordsResponse.Errors, ","))
 	case !listRecordsResponse.Success:
-		return "", false, errors.ErrUnsuccessfulResponse
+		return "", false, fmt.Errorf("%w", errors.ErrUnsuccessfulResponse)
 	case len(listRecordsResponse.Result) == 0:
-		return "", false, errors.ErrNoResultReceived
+		return "", false, fmt.Errorf("%w", errors.ErrNoResultReceived)
 	case len(listRecordsResponse.Result) > 1:
 		return "", false, fmt.Errorf("%w: %d instead of 1",
 			errors.ErrNumberOfResultsReceived, len(listRecordsResponse.Result))
@@ -207,14 +213,14 @@ func (p *provider) getRecordID(ctx context.Context, client *http.Client, newIP n
 	return listRecordsResponse.Result[0].ID, false, nil
 }
 
-func (p *provider) Update(ctx context.Context, client *http.Client, ip net.IP) (newIP net.IP, err error) {
+func (p *Provider) Update(ctx context.Context, client *http.Client, ip net.IP) (newIP net.IP, err error) {
 	recordType := constants.A
 	if ip.To4() == nil {
 		recordType = constants.AAAA
 	}
 	identifier, upToDate, err := p.getRecordID(ctx, client, ip)
 	if err != nil {
-		return nil, fmt.Errorf("%s: %w", errors.ErrGetRecordID, err)
+		return nil, fmt.Errorf("%w: %w", errors.ErrGetRecordID, err)
 	} else if upToDate {
 		return ip, nil
 	}
@@ -241,8 +247,9 @@ func (p *provider) Update(ctx context.Context, client *http.Client, ip net.IP) (
 
 	buffer := bytes.NewBuffer(nil)
 	encoder := json.NewEncoder(buffer)
-	if err := encoder.Encode(requestData); err != nil {
-		return nil, fmt.Errorf("%w: %s", errors.ErrRequestEncode, err)
+	err = encoder.Encode(requestData)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %w", errors.ErrRequestEncode, err)
 	}
 
 	request, err := http.NewRequestWithContext(ctx, http.MethodPut, u.String(), buffer)
@@ -274,8 +281,9 @@ func (p *provider) Update(ctx context.Context, client *http.Client, ip net.IP) (
 			Content string `json:"content"`
 		} `json:"result"`
 	}
-	if err := decoder.Decode(&parsedJSON); err != nil {
-		return nil, fmt.Errorf("%w: %s", errors.ErrUnmarshalResponse, err)
+	err = decoder.Decode(&parsedJSON)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %w", errors.ErrUnmarshalResponse, err)
 	}
 
 	if !parsedJSON.Success {

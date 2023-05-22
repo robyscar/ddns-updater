@@ -34,6 +34,7 @@ Light container updating DNS A and/or AAAA records periodically for multiple DNS
 
 - Updates periodically A records for different DNS providers:
   - Aliyun
+  - AllInkl
   - Cloudflare
   - DD24
   - DDNSS.de
@@ -47,10 +48,12 @@ Light container updating DNS A and/or AAAA records periodically for multiple DNS
   - Dynu
   - FreeDNS
   - Gandi
+  - GCP
   - GoDaddy
   - Google
   - He.net
   - Infomaniak
+  - INWX
   - Linode
   - LuaDNS
   - Namecheap
@@ -93,7 +96,7 @@ The program reads the configuration from a JSON object, either from a file or fr
     chmod 400 data/config.json
     ```
 
-    If you want to use another user ID, [build the image yourself](#Build-the-image) with `--build-arg UID=<your-uid>`. You could also just run the container as root with `--user="0"` but this is not advised security wise.
+    If you want to use another user ID, [build the image yourself](#build-the-image) with `--build-arg UID=<your-uid>`. You could also just run the container as root with `--user="0"` but this is not advised security wise.
 1. Write a JSON configuration in *data/config.json*, for example:
 
     ```json
@@ -169,10 +172,12 @@ Check the documentation for your DNS provider:
 - [DynV6](https://github.com/qdm12/ddns-updater/blob/master/docs/dynv6.md)
 - [FreeDNS](https://github.com/qdm12/ddns-updater/blob/master/docs/freedns.md)
 - [Gandi](https://github.com/qdm12/ddns-updater/blob/master/docs/gandi.md)
+- [GCP](https://github.com/qdm12/ddns-updater/blob/master/docs/gcp.md)
 - [GoDaddy](https://github.com/qdm12/ddns-updater/blob/master/docs/godaddy.md)
 - [Google](https://github.com/qdm12/ddns-updater/blob/master/docs/google.md)
 - [He.net](https://github.com/qdm12/ddns-updater/blob/master/docs/he.net.md)
 - [Infomaniak](https://github.com/qdm12/ddns-updater/blob/master/docs/infomaniak.md)
+- [INWX](https://github.com/qdm12/ddns-updater/blob/master/docs/inwx.md)
 - [Linode](https://github.com/qdm12/ddns-updater/blob/master/docs/linode.md)
 - [LuaDNS](https://github.com/qdm12/ddns-updater/blob/master/docs/luadns.md)
 - [Namecheap](https://github.com/qdm12/ddns-updater/blob/master/docs/namecheap.md)
@@ -199,10 +204,10 @@ Note that:
 | `PERIOD` | `5m` | Default period of IP address check, following [this format](https://golang.org/pkg/time/#ParseDuration) |
 | `IPV6_PREFIX` | `/128` | IPv6 prefix used to mask your public IPv6 address and your record IPv6 address. Ranges from `/0` to `/128` depending on your ISP. |
 | `PUBLICIP_FETCHERS` | `all` | Comma separated fetcher types to obtain the public IP address from `http` and `dns` |
-| `PUBLICIP_HTTP_PROVIDERS` | `all` | Comma separated providers to obtain the public IP address (ipv4 or ipv6). See the [Public IP section](#Public-IP) |
-| `PUBLICIPV4_HTTP_PROVIDERS` | `all` | Comma separated providers to obtain the public IPv4 address only. See the [Public IP section](#Public-IP) |
-| `PUBLICIPV6_HTTP_PROVIDERS` | `all` | Comma separated providers to obtain the public IPv6 address only. See the [Public IP section](#Public-IP) |
-| `PUBLICIP_DNS_PROVIDERS` | `all` | Comma separated providers to obtain the public IP address (IPv4 and/or IPv6). See the [Public IP section](#Public-IP) |
+| `PUBLICIP_HTTP_PROVIDERS` | `all` | Comma separated providers to obtain the public IP address (ipv4 or ipv6). See the [Public IP section](#public-ip) |
+| `PUBLICIPV4_HTTP_PROVIDERS` | `all` | Comma separated providers to obtain the public IPv4 address only. See the [Public IP section](#public-ip) |
+| `PUBLICIPV6_HTTP_PROVIDERS` | `all` | Comma separated providers to obtain the public IPv6 address only. See the [Public IP section](#public-ip) |
+| `PUBLICIP_DNS_PROVIDERS` | `all` | Comma separated providers to obtain the public IP address (IPv4 and/or IPv6). See the [Public IP section](#public-ip) |
 | `PUBLICIP_DNS_TIMEOUT` | `3s` | Public IP DNS query timeout |
 | `UPDATE_COOLDOWN_PERIOD` | `5m` | Duration to cooldown between updates for each record. This is useful to avoid being rate limited or banned. |
 | `HTTP_TIMEOUT` | `10s` | Timeout for all HTTP requests |
@@ -212,6 +217,7 @@ Note that:
 | `DATADIR` | `/updater/data` | Directory to read and write data files from internally |
 | `BACKUP_PERIOD` | `0` | Set to a period (i.e. `72h15m`) to enable zip backups of data/config.json and data/updates.json in a zip file |
 | `BACKUP_DIRECTORY` | `/updater/data` | Directory to write backup zip files to if `BACKUP_PERIOD` is not `0`. |
+| `RESOLVER_ADDRESS` | Your network DNS | A plaintext DNS address to use, such as `1.1.1.1:53`. This is useful for split dns, see [#389](https://github.com/qdm12/ddns-updater/issues/389) |
 | `LOG_LEVEL` | `info` | Level of logging, `debug`, `info`, `warning` or `error` |
 | `LOG_CALLER` | `hidden` | Show caller per log line, `hidden` or `short` |
 | `SHOUTRRR_ADDRESSES` |  | (optional) Comma separated list of [Shoutrrr addresses](https://containrrr.dev/shoutrrr/services/overview/) (notification services) |

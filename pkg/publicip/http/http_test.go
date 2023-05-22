@@ -1,13 +1,11 @@
 package http
 
 import (
-	"errors"
 	"net/http"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
 )
 
 func Test_New(t *testing.T) {
@@ -16,25 +14,26 @@ func Test_New(t *testing.T) {
 	client := &http.Client{Timeout: time.Second}
 
 	testCases := map[string]struct {
-		options []Option
-		fetcher *fetcher
-		err     error
+		options    []Option
+		fetcher    *Fetcher
+		err        error
+		errMessage string
 	}{
 		"no options": {
-			fetcher: &fetcher{
+			fetcher: &Fetcher{
 				client:  client,
 				timeout: 5 * time.Second,
-				ip4or6: urlsRing{
-					counter: new(uint32),
-					urls:    []string{"https://domains.google.com/checkip"},
+				ip4or6: &urlsRing{
+					banned: map[int]string{},
+					urls:   []string{"https://domains.google.com/checkip"},
 				},
-				ip4: urlsRing{
-					counter: new(uint32),
-					urls:    []string{"http://ip1.dynupdate.no-ip.com"},
+				ip4: &urlsRing{
+					banned: map[int]string{},
+					urls:   []string{"http://ip1.dynupdate.no-ip.com"},
 				},
-				ip6: urlsRing{
-					counter: new(uint32),
-					urls:    []string{"http://ip1.dynupdate6.no-ip.com"},
+				ip6: &urlsRing{
+					banned: map[int]string{},
+					urls:   []string{"http://ip1.dynupdate6.no-ip.com"},
 				},
 			},
 		},
@@ -45,20 +44,20 @@ func Test_New(t *testing.T) {
 				SetProvidersIP6(Ipify),
 				SetTimeout(time.Second),
 			},
-			fetcher: &fetcher{
+			fetcher: &Fetcher{
 				client:  client,
 				timeout: time.Second,
-				ip4or6: urlsRing{
-					counter: new(uint32),
-					urls:    []string{"https://diagnostic.opendns.com/myip"},
+				ip4or6: &urlsRing{
+					banned: map[int]string{},
+					urls:   []string{"https://diagnostic.opendns.com/myip"},
 				},
-				ip4: urlsRing{
-					counter: new(uint32),
-					urls:    []string{"https://api.ipify.org"},
+				ip4: &urlsRing{
+					banned: map[int]string{},
+					urls:   []string{"https://api.ipify.org"},
 				},
-				ip6: urlsRing{
-					counter: new(uint32),
-					urls:    []string{"https://api6.ipify.org"},
+				ip6: &urlsRing{
+					banned: map[int]string{},
+					urls:   []string{"https://api6.ipify.org"},
 				},
 			},
 		},
@@ -66,7 +65,8 @@ func Test_New(t *testing.T) {
 			options: []Option{
 				SetProvidersIP(Provider("invalid")),
 			},
-			err: errors.New("unknown provider: invalid"),
+			err:        ErrUnknownProvider,
+			errMessage: "unknown provider: invalid",
 		},
 	}
 
@@ -75,18 +75,13 @@ func Test_New(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 
-			f, err := New(client, testCase.options...)
+			fetcher, err := New(client, testCase.options...)
 
+			assert.ErrorIs(t, err, testCase.err)
 			if testCase.err != nil {
-				require.Error(t, err)
-				assert.Equal(t, testCase.err.Error(), err.Error())
-				assert.Nil(t, f)
-				return
+				assert.EqualError(t, err, testCase.errMessage)
 			}
-			assert.NoError(t, err)
-			implementation, ok := f.(*fetcher)
-			require.True(t, ok)
-			assert.Equal(t, testCase.fetcher, implementation)
+			assert.Equal(t, testCase.fetcher, fetcher)
 		})
 	}
 }

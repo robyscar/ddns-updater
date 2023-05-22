@@ -3,12 +3,11 @@ package aliyun
 import (
 	"context"
 	"encoding/json"
+	stderrors "errors"
 	"fmt"
 	"net"
 	"net/http"
-	"strings"
 
-	"github.com/aliyun/alibaba-cloud-sdk-go/services/alidns"
 	"github.com/qdm12/ddns-updater/internal/models"
 	"github.com/qdm12/ddns-updater/internal/settings/constants"
 	"github.com/qdm12/ddns-updater/internal/settings/errors"
@@ -16,77 +15,79 @@ import (
 	"github.com/qdm12/ddns-updater/pkg/publicip/ipversion"
 )
 
-type provider struct {
+type Provider struct {
 	domain       string
 	host         string
 	ipVersion    ipversion.IPVersion
-	accessKeyId  string
+	accessKeyID  string
 	accessSecret string
 	region       string
 }
 
 func New(data json.RawMessage, domain, host string,
-	ipVersion ipversion.IPVersion) (p *provider, err error) {
+	ipVersion ipversion.IPVersion) (p *Provider, err error) {
 	extraSettings := struct {
-		AccessKeyId  string `json:"access_key_id"`
+		AccessKeyID  string `json:"access_key_id"`
 		AccessSecret string `json:"access_secret"`
 		Region       string `json:"region"`
 	}{}
-	if err := json.Unmarshal(data, &extraSettings); err != nil {
+	err = json.Unmarshal(data, &extraSettings)
+	if err != nil {
 		return nil, err
 	}
-	p = &provider{
+	p = &Provider{
 		domain:       domain,
 		host:         host,
 		ipVersion:    ipVersion,
-		accessKeyId:  extraSettings.AccessKeyId,
+		accessKeyID:  extraSettings.AccessKeyID,
 		accessSecret: extraSettings.AccessSecret,
 		region:       "cn-hangzhou",
 	}
 	if extraSettings.Region != "" {
 		p.region = extraSettings.Region
 	}
-	if err := p.isValid(); err != nil {
+	err = p.isValid()
+	if err != nil {
 		return nil, err
 	}
 	return p, nil
 }
 
-func (p *provider) isValid() error {
+func (p *Provider) isValid() error {
 	switch {
-	case p.accessKeyId == "":
-		return errors.ErrEmptyAccessKeyId
+	case p.accessKeyID == "":
+		return fmt.Errorf("%w", errors.ErrEmptyAccessKeyID)
 	case p.accessSecret == "":
-		return errors.ErrEmptyAccessKeySecret
+		return fmt.Errorf("%w", errors.ErrEmptyAccessKeySecret)
 	}
 	return nil
 }
 
-func (p *provider) String() string {
+func (p *Provider) String() string {
 	return utils.ToString(p.domain, p.host, constants.Aliyun, p.ipVersion)
 }
 
-func (p *provider) Domain() string {
+func (p *Provider) Domain() string {
 	return p.domain
 }
 
-func (p *provider) Host() string {
+func (p *Provider) Host() string {
 	return p.host
 }
 
-func (p *provider) IPVersion() ipversion.IPVersion {
+func (p *Provider) IPVersion() ipversion.IPVersion {
 	return p.ipVersion
 }
 
-func (p *provider) Proxied() bool {
+func (p *Provider) Proxied() bool {
 	return false
 }
 
-func (p *provider) BuildDomainName() string {
+func (p *Provider) BuildDomainName() string {
 	return utils.BuildDomainName(p.host, p.domain)
 }
 
-func (p *provider) HTML() models.HTMLRow {
+func (p *Provider) HTML() models.HTMLRow {
 	return models.HTMLRow{
 		Domain:    models.HTML(fmt.Sprintf("<a href=\"http://%s\">%s</a>", p.BuildDomainName(), p.BuildDomainName())),
 		Host:      models.HTML(p.Host()),
@@ -95,45 +96,27 @@ func (p *provider) HTML() models.HTMLRow {
 	}
 }
 
-func (p *provider) Update(ctx context.Context, _ *http.Client, ip net.IP) (newIP net.IP, err error) {
+func (p *Provider) Update(ctx context.Context, client *http.Client, ip net.IP) (newIP net.IP, err error) {
+	// Documentation at https://api.aliyun.com/
 	recordType := constants.A
 	if ip.To4() == nil {
 		recordType = constants.AAAA
 	}
 
-	client, err := alidns.NewClientWithAccessKey(p.region, p.accessKeyId, p.accessSecret)
-	if err != nil {
-		return nil, err
-	}
-
-	listRequest := alidns.CreateDescribeDomainRecordsRequest()
-	listRequest.Scheme = "https"
-
-	listRequest.DomainName = p.domain
-	listRequest.RRKeyWord = p.host
-	resp, err := client.DescribeDomainRecords(listRequest)
-	if err != nil {
-		return nil, err
-	}
-	recordID := ""
-	for _, record := range resp.DomainRecords.Record {
-		if strings.EqualFold(record.RR, p.host) {
-			recordID = record.RecordId
-			break
+	recordID, err := p.getRecordID(ctx, client, recordType)
+	if stderrors.Is(err, errors.ErrRecordNotFound) {
+		recordID, err = p.createRecord(ctx, client, ip)
+		if err != nil {
+			return nil, fmt.Errorf("%w: %w", errors.ErrCreateRecord, err)
 		}
+	} else if err != nil {
+		return nil, fmt.Errorf("%w: %w", errors.ErrGetRecordID, err)
 	}
-	if recordID == "" {
-		return nil, errors.ErrRecordNotFound
+
+	err = p.updateRecord(ctx, client, recordID, ip)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %w", errors.ErrUpdateRecord, err)
 	}
 
-	request := alidns.CreateUpdateDomainRecordRequest()
-	request.Scheme = "https"
-
-	request.Value = ip.String()
-	request.Type = recordType
-	request.RR = p.host
-	request.RecordId = recordID
-
-	_, err = client.UpdateDomainRecord(request)
-	return ip, err
+	return ip, nil
 }

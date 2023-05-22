@@ -9,9 +9,9 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"regexp"
 
 	"github.com/qdm12/ddns-updater/internal/models"
-	"github.com/qdm12/ddns-updater/internal/regex"
 	"github.com/qdm12/ddns-updater/internal/settings/constants"
 	"github.com/qdm12/ddns-updater/internal/settings/errors"
 	"github.com/qdm12/ddns-updater/internal/settings/headers"
@@ -19,70 +19,72 @@ import (
 	"github.com/qdm12/ddns-updater/pkg/publicip/ipversion"
 )
 
-type provider struct {
+type Provider struct {
 	domain    string
 	host      string
 	ipVersion ipversion.IPVersion
 	key       string
-	matcher   regex.Matcher
 }
 
-func New(data json.RawMessage, domain, host string, ipVersion ipversion.IPVersion,
-	matcher regex.Matcher) (p *provider, err error) {
+func New(data json.RawMessage, domain, host string,
+	ipVersion ipversion.IPVersion) (p *Provider, err error) {
 	extraSettings := struct {
 		Key string `json:"key"`
 	}{}
-	if err := json.Unmarshal(data, &extraSettings); err != nil {
+	err = json.Unmarshal(data, &extraSettings)
+	if err != nil {
 		return nil, err
 	}
 	if host == "" { // TODO-v2 remove default
 		host = "@" // default
 	}
-	p = &provider{
+	p = &Provider{
 		domain:    domain,
 		host:      host,
 		ipVersion: ipVersion,
 		key:       extraSettings.Key,
-		matcher:   matcher,
 	}
-	if err := p.isValid(); err != nil {
+	err = p.isValid()
+	if err != nil {
 		return nil, err
 	}
 	return p, nil
 }
 
-func (p *provider) isValid() error {
-	if !p.matcher.DreamhostKey(p.key) {
-		return fmt.Errorf("invalid key format")
+var keyRegex = regexp.MustCompile(`^[a-zA-Z0-9]{16}$`)
+
+func (p *Provider) isValid() error {
+	if !keyRegex.MatchString(p.key) {
+		return fmt.Errorf("%w: %s", errors.ErrMalformedKey, p.key)
 	}
 	return nil
 }
 
-func (p *provider) String() string {
+func (p *Provider) String() string {
 	return utils.ToString(p.domain, p.host, constants.Dreamhost, p.ipVersion)
 }
 
-func (p *provider) Domain() string {
+func (p *Provider) Domain() string {
 	return p.domain
 }
 
-func (p *provider) Host() string {
+func (p *Provider) Host() string {
 	return p.host
 }
 
-func (p *provider) IPVersion() ipversion.IPVersion {
+func (p *Provider) IPVersion() ipversion.IPVersion {
 	return p.ipVersion
 }
 
-func (p *provider) Proxied() bool {
+func (p *Provider) Proxied() bool {
 	return false
 }
 
-func (p *provider) BuildDomainName() string {
+func (p *Provider) BuildDomainName() string {
 	return utils.BuildDomainName(p.host, p.domain)
 }
 
-func (p *provider) HTML() models.HTMLRow {
+func (p *Provider) HTML() models.HTMLRow {
 	return models.HTMLRow{
 		Domain:    models.HTML(fmt.Sprintf("<a href=\"http://%s\">%s</a>", p.BuildDomainName(), p.BuildDomainName())),
 		Host:      models.HTML(p.Host()),
@@ -91,7 +93,7 @@ func (p *provider) HTML() models.HTMLRow {
 	}
 }
 
-func (p *provider) Update(ctx context.Context, client *http.Client, ip net.IP) (newIP net.IP, err error) {
+func (p *Provider) Update(ctx context.Context, client *http.Client, ip net.IP) (newIP net.IP, err error) {
 	recordType := constants.A
 	if ip.To4() == nil {
 		recordType = constants.AAAA
@@ -99,14 +101,14 @@ func (p *provider) Update(ctx context.Context, client *http.Client, ip net.IP) (
 
 	records, err := p.getRecords(ctx, client)
 	if err != nil {
-		return nil, fmt.Errorf("%w: %s", errors.ErrListRecords, err)
+		return nil, fmt.Errorf("%w: %w", errors.ErrListRecords, err)
 	}
 
 	var oldIP net.IP
 	for _, data := range records.Data {
 		if data.Type == recordType && data.Record == utils.BuildURLQueryHostname(p.host, p.domain) {
 			if data.Editable == "0" {
-				return nil, errors.ErrRecordNotEditable
+				return nil, fmt.Errorf("%w", errors.ErrRecordNotEditable)
 			}
 			oldIP = net.ParseIP(data.Value)
 			if ip.Equal(oldIP) { // constants.Success, nothing to change
@@ -117,13 +119,15 @@ func (p *provider) Update(ctx context.Context, client *http.Client, ip net.IP) (
 	}
 
 	// Create the record with the new IP before removing the old one if it exists.
-	if err := p.createRecord(ctx, client, ip); err != nil {
-		return nil, fmt.Errorf("%w: %s", errors.ErrCreateRecord, err)
+	err = p.createRecord(ctx, client, ip)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %w", errors.ErrCreateRecord, err)
 	}
 
 	if oldIP != nil { // Found editable record with a different IP address, so remove it
-		if err := p.removeRecord(ctx, client, oldIP); err != nil {
-			return nil, fmt.Errorf("%w: %s", errors.ErrRemoveRecord, err)
+		err = p.removeRecord(ctx, client, oldIP)
+		if err != nil {
+			return nil, fmt.Errorf("%w: %w", errors.ErrRemoveRecord, err)
 		}
 	}
 
@@ -146,7 +150,7 @@ type (
 	}
 )
 
-func (p *provider) defaultURLValues() (values url.Values) {
+func (p *Provider) defaultURLValues() (values url.Values) {
 	uuid := make([]byte, 16) //nolint:gomnd
 	_, _ = io.ReadFull(rand.Reader, uuid)
 	//nolint:gomnd
@@ -160,7 +164,7 @@ func (p *provider) defaultURLValues() (values url.Values) {
 	return values
 }
 
-func (p *provider) getRecords(ctx context.Context, client *http.Client) (
+func (p *Provider) getRecords(ctx context.Context, client *http.Client) (
 	records dreamHostRecords, err error) {
 	u := url.URL{
 		Scheme: "https",
@@ -188,8 +192,9 @@ func (p *provider) getRecords(ctx context.Context, client *http.Client) (
 	}
 
 	decoder := json.NewDecoder(response.Body)
-	if err := decoder.Decode(&records); err != nil {
-		return records, fmt.Errorf("%w: %s", errors.ErrUnmarshalResponse, err)
+	err = decoder.Decode(&records)
+	if err != nil {
+		return records, fmt.Errorf("%w: %w", errors.ErrUnmarshalResponse, err)
 	}
 
 	if records.Result != constants.Success {
@@ -198,7 +203,7 @@ func (p *provider) getRecords(ctx context.Context, client *http.Client) (
 	return records, nil
 }
 
-func (p *provider) removeRecord(ctx context.Context, client *http.Client, ip net.IP) error { //nolint:dupl
+func (p *Provider) removeRecord(ctx context.Context, client *http.Client, ip net.IP) error { //nolint:dupl
 	recordType := constants.A
 	if ip.To4() == nil {
 		recordType = constants.AAAA
@@ -234,8 +239,9 @@ func (p *provider) removeRecord(ctx context.Context, client *http.Client, ip net
 
 	var dhResponse dreamhostReponse
 	decoder := json.NewDecoder(response.Body)
-	if err := decoder.Decode(&dhResponse); err != nil {
-		return fmt.Errorf("%w: %s", errors.ErrUnmarshalResponse, err)
+	err = decoder.Decode(&dhResponse)
+	if err != nil {
+		return fmt.Errorf("%w: %w", errors.ErrUnmarshalResponse, err)
 	}
 
 	if dhResponse.Result != constants.Success { // this should not happen
@@ -245,7 +251,7 @@ func (p *provider) removeRecord(ctx context.Context, client *http.Client, ip net
 	return nil
 }
 
-func (p *provider) createRecord(ctx context.Context, client *http.Client, ip net.IP) error { //nolint:dupl
+func (p *Provider) createRecord(ctx context.Context, client *http.Client, ip net.IP) error { //nolint:dupl
 	recordType := constants.A
 	if ip.To4() == nil {
 		recordType = constants.AAAA
@@ -281,8 +287,9 @@ func (p *provider) createRecord(ctx context.Context, client *http.Client, ip net
 
 	var dhResponse dreamhostReponse
 	decoder := json.NewDecoder(response.Body)
-	if err := decoder.Decode(&dhResponse); err != nil {
-		return fmt.Errorf("%w: %s", errors.ErrUnmarshalResponse, err)
+	err = decoder.Decode(&dhResponse)
+	if err != nil {
+		return fmt.Errorf("%w: %w", errors.ErrUnmarshalResponse, err)
 	}
 
 	if dhResponse.Result != constants.Success {

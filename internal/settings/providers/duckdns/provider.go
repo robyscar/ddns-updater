@@ -8,9 +8,9 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"regexp"
 
 	"github.com/qdm12/ddns-updater/internal/models"
-	"github.com/qdm12/ddns-updater/internal/regex"
 	"github.com/qdm12/ddns-updater/internal/settings/constants"
 	"github.com/qdm12/ddns-updater/internal/settings/errors"
 	"github.com/qdm12/ddns-updater/internal/settings/headers"
@@ -19,72 +19,74 @@ import (
 	"github.com/qdm12/golibs/verification"
 )
 
-type provider struct {
+type Provider struct {
 	host          string
 	ipVersion     ipversion.IPVersion
 	token         string
 	useProviderIP bool
-	matcher       regex.Matcher
 }
 
-func New(data json.RawMessage, domain, host string, ipVersion ipversion.IPVersion,
-	matcher regex.Matcher) (p *provider, err error) {
+func New(data json.RawMessage, _, host string,
+	ipVersion ipversion.IPVersion) (p *Provider, err error) {
 	extraSettings := struct {
 		Token         string `json:"token"`
 		UseProviderIP bool   `json:"provider_ip"`
 	}{}
-	if err := json.Unmarshal(data, &extraSettings); err != nil {
+	err = json.Unmarshal(data, &extraSettings)
+	if err != nil {
 		return nil, err
 	}
-	p = &provider{
+	p = &Provider{
 		host:          host,
 		ipVersion:     ipVersion,
 		token:         extraSettings.Token,
 		useProviderIP: extraSettings.UseProviderIP,
-		matcher:       matcher,
 	}
-	if err := p.isValid(); err != nil {
+	err = p.isValid()
+	if err != nil {
 		return nil, err
 	}
 	return p, nil
 }
 
-func (p *provider) isValid() error {
-	if !p.matcher.DuckDNSToken(p.token) {
-		return errors.ErrMalformedToken
+var tokenRegex = regexp.MustCompile(`^[a-f0-9]{8}\-[a-f0-9]{4}\-[a-f0-9]{4}\-[a-f0-9]{4}\-[a-f0-9]{12}$`)
+
+func (p *Provider) isValid() error {
+	if !tokenRegex.MatchString(p.token) {
+		return fmt.Errorf("%w", errors.ErrMalformedToken)
 	}
 	switch p.host {
 	case "@", "*":
-		return errors.ErrHostOnlySubdomain
+		return fmt.Errorf("%w", errors.ErrHostOnlySubdomain)
 	}
 	return nil
 }
 
-func (p *provider) String() string {
+func (p *Provider) String() string {
 	return utils.ToString("duckdns.org", p.host, constants.DuckDNS, p.ipVersion)
 }
 
-func (p *provider) Domain() string {
+func (p *Provider) Domain() string {
 	return "duckdns.org"
 }
 
-func (p *provider) Host() string {
+func (p *Provider) Host() string {
 	return p.host
 }
 
-func (p *provider) IPVersion() ipversion.IPVersion {
+func (p *Provider) IPVersion() ipversion.IPVersion {
 	return p.ipVersion
 }
 
-func (p *provider) Proxied() bool {
+func (p *Provider) Proxied() bool {
 	return false
 }
 
-func (p *provider) BuildDomainName() string {
+func (p *Provider) BuildDomainName() string {
 	return utils.BuildDomainName(p.host, "duckdns.org")
 }
 
-func (p *provider) HTML() models.HTMLRow {
+func (p *Provider) HTML() models.HTMLRow {
 	return models.HTMLRow{
 		Domain:    models.HTML(fmt.Sprintf("<a href=\"http://%s\">%s</a>", p.BuildDomainName(), p.BuildDomainName())),
 		Host:      models.HTML(p.Host()),
@@ -93,7 +95,7 @@ func (p *provider) HTML() models.HTMLRow {
 	}
 }
 
-func (p *provider) Update(ctx context.Context, client *http.Client, ip net.IP) (newIP net.IP, err error) {
+func (p *Provider) Update(ctx context.Context, client *http.Client, ip net.IP) (newIP net.IP, err error) {
 	u := url.URL{
 		Scheme: "https",
 		Host:   "www.duckdns.org",
@@ -126,7 +128,7 @@ func (p *provider) Update(ctx context.Context, client *http.Client, ip net.IP) (
 
 	b, err := io.ReadAll(response.Body)
 	if err != nil {
-		return nil, fmt.Errorf("%w: %s", errors.ErrUnmarshalResponse, err)
+		return nil, fmt.Errorf("%w: %w", errors.ErrUnmarshalResponse, err)
 	}
 	s := string(b)
 
@@ -140,11 +142,11 @@ func (p *provider) Update(ctx context.Context, client *http.Client, ip net.IP) (
 	case len(s) < minChars:
 		return nil, fmt.Errorf("%w: response %q is too short", errors.ErrUnmarshalResponse, s)
 	case s[0:minChars] == "KO":
-		return nil, errors.ErrAuth
+		return nil, fmt.Errorf("%w", errors.ErrAuth)
 	case s[0:minChars] == "OK":
 		ips := verification.NewVerifier().SearchIPv4(s)
 		if ips == nil {
-			return nil, errors.ErrNoResultReceived
+			return nil, fmt.Errorf("%w", errors.ErrNoResultReceived)
 		}
 		newIP = net.ParseIP(ips[0])
 		if newIP == nil {

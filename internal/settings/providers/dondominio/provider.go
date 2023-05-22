@@ -17,7 +17,7 @@ import (
 	"github.com/qdm12/ddns-updater/pkg/publicip/ipversion"
 )
 
-type provider struct {
+type Provider struct {
 	domain    string
 	host      string
 	ipVersion ipversion.IPVersion
@@ -27,19 +27,20 @@ type provider struct {
 }
 
 func New(data json.RawMessage, domain, host string,
-	ipVersion ipversion.IPVersion) (p *provider, err error) {
+	ipVersion ipversion.IPVersion) (p *Provider, err error) {
 	extraSettings := struct {
 		Username string `json:"username"`
 		Password string `json:"password"`
 		Name     string `json:"name"`
 	}{}
-	if err := json.Unmarshal(data, &extraSettings); err != nil {
+	err = json.Unmarshal(data, &extraSettings)
+	if err != nil {
 		return nil, err
 	}
-	if len(host) == 0 {
+	if host == "" {
 		host = "@" // default
 	}
-	p = &provider{
+	p = &Provider{
 		domain:    domain,
 		host:      host,
 		ipVersion: ipVersion,
@@ -47,51 +48,52 @@ func New(data json.RawMessage, domain, host string,
 		password:  extraSettings.Password,
 		name:      extraSettings.Name,
 	}
-	if err := p.isValid(); err != nil {
+	err = p.isValid()
+	if err != nil {
 		return nil, err
 	}
 	return p, nil
 }
 
-func (p *provider) isValid() error {
+func (p *Provider) isValid() error {
 	switch {
-	case len(p.username) == 0:
-		return errors.ErrEmptyUsername
-	case len(p.password) == 0:
-		return errors.ErrEmptyPassword
-	case len(p.name) == 0:
-		return errors.ErrEmptyName
+	case p.username == "":
+		return fmt.Errorf("%w", errors.ErrEmptyUsername)
+	case p.password == "":
+		return fmt.Errorf("%w", errors.ErrEmptyPassword)
+	case p.name == "":
+		return fmt.Errorf("%w", errors.ErrEmptyName)
 	case p.host != "@":
-		return errors.ErrHostOnlyAt
+		return fmt.Errorf("%w", errors.ErrHostOnlyAt)
 	}
 	return nil
 }
 
-func (p *provider) String() string {
+func (p *Provider) String() string {
 	return utils.ToString(p.domain, p.host, constants.DonDominio, p.ipVersion)
 }
 
-func (p *provider) Domain() string {
+func (p *Provider) Domain() string {
 	return p.domain
 }
 
-func (p *provider) Host() string {
+func (p *Provider) Host() string {
 	return p.host
 }
 
-func (p *provider) IPVersion() ipversion.IPVersion {
+func (p *Provider) IPVersion() ipversion.IPVersion {
 	return p.ipVersion
 }
 
-func (p *provider) Proxied() bool {
+func (p *Provider) Proxied() bool {
 	return false
 }
 
-func (p *provider) BuildDomainName() string {
+func (p *Provider) BuildDomainName() string {
 	return utils.BuildDomainName(p.host, p.domain)
 }
 
-func (p *provider) HTML() models.HTMLRow {
+func (p *Provider) HTML() models.HTMLRow {
 	return models.HTMLRow{
 		Domain:    models.HTML(fmt.Sprintf("<a href=\"http://%s\">%s</a>", p.BuildDomainName(), p.BuildDomainName())),
 		Host:      models.HTML(p.Host()),
@@ -100,13 +102,13 @@ func (p *provider) HTML() models.HTMLRow {
 	}
 }
 
-func (p *provider) setHeaders(request *http.Request) {
+func (p *Provider) setHeaders(request *http.Request) {
 	headers.SetUserAgent(request)
 	headers.SetContentType(request, "application/x-www-form-urlencoded")
 	headers.SetAccept(request, "application/json")
 }
 
-func (p *provider) Update(ctx context.Context, client *http.Client, ip net.IP) (newIP net.IP, err error) {
+func (p *Provider) Update(ctx context.Context, client *http.Client, ip net.IP) (newIP net.IP, err error) {
 	u := url.URL{
 		Scheme: "https",
 		Host:   "simple-api.dondominio.net",
@@ -154,8 +156,9 @@ func (p *provider) Update(ctx context.Context, client *http.Client, ip net.IP) (
 			} `json:"gluerecords"`
 		} `json:"responseData"`
 	}
-	if err := decoder.Decode(&responseData); err != nil {
-		return nil, fmt.Errorf("%w: %s", errors.ErrUnmarshalResponse, err)
+	err = decoder.Decode(&responseData)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %w", errors.ErrUnmarshalResponse, err)
 	}
 
 	if !responseData.Success {

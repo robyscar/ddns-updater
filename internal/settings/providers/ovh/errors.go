@@ -14,11 +14,12 @@ func extractAPIError(response *http.Response) (err error) {
 	var apiError struct {
 		Message string
 	}
-	if err := decoder.Decode(&apiError); err != nil {
+	err = decoder.Decode(&apiError)
+	if err != nil {
 		b, err := io.ReadAll(response.Body)
 		if err != nil {
 			_ = response.Body.Close()
-			return fmt.Errorf("%w: %s", errors.ErrUnmarshalResponse, err)
+			return fmt.Errorf("%w: %w", errors.ErrUnmarshalResponse, err)
 		}
 		apiError.Message = string(b)
 	}

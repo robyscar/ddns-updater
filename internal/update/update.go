@@ -9,28 +9,22 @@ import (
 	"time"
 
 	"github.com/qdm12/ddns-updater/internal/constants"
-	"github.com/qdm12/ddns-updater/internal/data"
 	"github.com/qdm12/ddns-updater/internal/models"
 	settingserrors "github.com/qdm12/ddns-updater/internal/settings/errors"
-	"github.com/qdm12/golibs/logging"
 )
 
-type Updater interface {
-	Update(ctx context.Context, id int, ip net.IP, now time.Time) (err error)
-}
-
-type updater struct {
-	db     data.Database
+type Updater struct {
+	db     Database
 	client *http.Client
 	notify notifyFunc
-	logger logging.Logger
+	logger DebugLogger
 }
 
 type notifyFunc func(message string)
 
-func NewUpdater(db data.Database, client *http.Client, notify notifyFunc, logger logging.Logger) Updater {
+func NewUpdater(db Database, client *http.Client, notify notifyFunc, logger DebugLogger) *Updater {
 	client = makeLogClient(client, logger)
-	return &updater{
+	return &Updater{
 		db:     db,
 		client: client,
 		notify: notify,
@@ -38,14 +32,15 @@ func NewUpdater(db data.Database, client *http.Client, notify notifyFunc, logger
 	}
 }
 
-func (u *updater) Update(ctx context.Context, id int, ip net.IP, now time.Time) (err error) {
+func (u *Updater) Update(ctx context.Context, id uint, ip net.IP, now time.Time) (err error) {
 	record, err := u.db.Select(id)
 	if err != nil {
 		return err
 	}
 	record.Time = now
 	record.Status = constants.UPDATING
-	if err := u.db.Update(id, record); err != nil {
+	err = u.db.Update(id, record)
+	if err != nil {
 		return err
 	}
 	record.Status = constants.FAIL
@@ -55,15 +50,16 @@ func (u *updater) Update(ctx context.Context, id int, ip net.IP, now time.Time) 
 		if errors.Is(err, settingserrors.ErrAbuse) {
 			lastBan := time.Unix(now.Unix(), 0)
 			record.LastBan = &lastBan
-			message := record.Settings.BuildDomainName() + ": " + record.Message +
+			domainName := record.Settings.BuildDomainName()
+			message := domainName + ": " + record.Message +
 				", no more updates will be attempted for an hour"
 			u.notify(message)
-			err = fmt.Errorf(message)
+			err = fmt.Errorf("%w: for domain %s, no more update will be attempted for 1h", err, domainName)
 		} else {
 			record.LastBan = nil // clear a previous ban
 		}
 		if updateErr := u.db.Update(id, record); updateErr != nil {
-			return fmt.Errorf("%s, %s", err, updateErr)
+			return fmt.Errorf("%w (with database update error: %w)", err, updateErr)
 		}
 		return err
 	}

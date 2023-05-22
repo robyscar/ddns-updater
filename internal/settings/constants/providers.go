@@ -10,7 +10,7 @@ const (
 	Dd24         models.Provider = "dd24"
 	DdnssDe      models.Provider = "ddnss"
 	DigitalOcean models.Provider = "digitalocean"
-	DnsOMatic    models.Provider = "dnsomatic"
+	DNSOMatic    models.Provider = "dnsomatic"
 	DNSPod       models.Provider = "dnspod"
 	DonDominio   models.Provider = "dondominio"
 	Dreamhost    models.Provider = "dreamhost"
@@ -20,10 +20,12 @@ const (
 	DynV6        models.Provider = "dynv6"
 	FreeDNS      models.Provider = "freedns"
 	Gandi        models.Provider = "gandi"
+	GCP          models.Provider = "gcp"
 	GoDaddy      models.Provider = "godaddy"
 	Google       models.Provider = "google"
 	HE           models.Provider = "he"
 	Infomaniak   models.Provider = "infomaniak"
+	INWX         models.Provider = "inwx"
 	Linode       models.Provider = "linode"
 	LuaDNS       models.Provider = "luadns"
 	Namecheap    models.Provider = "namecheap"
@@ -47,7 +49,7 @@ func ProviderChoices() []models.Provider {
 		Dd24,
 		DdnssDe,
 		DigitalOcean,
-		DnsOMatic,
+		DNSOMatic,
 		DNSPod,
 		DonDominio,
 		Dreamhost,
@@ -57,10 +59,12 @@ func ProviderChoices() []models.Provider {
 		DynV6,
 		FreeDNS,
 		Gandi,
+		GCP,
 		GoDaddy,
 		Google,
 		HE,
 		Infomaniak,
+		INWX,
 		Linode,
 		LuaDNS,
 		Namecheap,

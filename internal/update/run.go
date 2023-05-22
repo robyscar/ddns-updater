@@ -7,37 +7,29 @@ import (
 	"time"
 
 	"github.com/qdm12/ddns-updater/internal/constants"
-	"github.com/qdm12/ddns-updater/internal/data"
 	"github.com/qdm12/ddns-updater/internal/models"
 	librecords "github.com/qdm12/ddns-updater/internal/records"
-	"github.com/qdm12/ddns-updater/pkg/publicip"
 	"github.com/qdm12/ddns-updater/pkg/publicip/ipversion"
-	"github.com/qdm12/golibs/logging"
 )
 
-type Runner interface {
-	Run(ctx context.Context, done chan<- struct{})
-	ForceUpdate(ctx context.Context) []error
-}
-
-type runner struct {
+type Runner struct {
 	period      time.Duration
-	db          data.Database
-	updater     Updater
+	db          Database
+	updater     UpdaterInterface
 	force       chan struct{}
 	forceResult chan []error
 	ipv6Mask    net.IPMask
 	cooldown    time.Duration
-	resolver    *net.Resolver
-	ipGetter    publicip.Fetcher
-	logger      logging.Logger
+	resolver    LookupIPer
+	ipGetter    PublicIPFetcher
+	logger      Logger
 	timeNow     func() time.Time
 }
 
-func NewRunner(db data.Database, updater Updater, ipGetter publicip.Fetcher,
+func NewRunner(db Database, updater UpdaterInterface, ipGetter PublicIPFetcher,
 	period time.Duration, ipv6Mask net.IPMask, cooldown time.Duration,
-	logger logging.Logger, timeNow func() time.Time) Runner {
-	return &runner{
+	logger Logger, resolver LookupIPer, timeNow func() time.Time) *Runner {
+	return &Runner{
 		period:      period,
 		db:          db,
 		updater:     updater,
@@ -45,14 +37,14 @@ func NewRunner(db data.Database, updater Updater, ipGetter publicip.Fetcher,
 		forceResult: make(chan []error),
 		ipv6Mask:    ipv6Mask,
 		cooldown:    cooldown,
-		resolver:    net.DefaultResolver,
+		resolver:    resolver,
 		ipGetter:    ipGetter,
 		logger:      logger,
 		timeNow:     timeNow,
 	}
 }
 
-func (r *runner) lookupIPsResilient(ctx context.Context, hostname string, tries int) (
+func (r *Runner) lookupIPsResilient(ctx context.Context, hostname string, tries int) (
 	ipv4 net.IP, ipv6 net.IP, err error) {
 	for i := 0; i < tries; i++ {
 		ipv4, ipv6, err = r.lookupIPs(ctx, hostname)
@@ -63,7 +55,7 @@ func (r *runner) lookupIPsResilient(ctx context.Context, hostname string, tries 
 	return nil, nil, err
 }
 
-func (r *runner) lookupIPs(ctx context.Context, hostname string) (ipv4 net.IP, ipv6 net.IP, err error) {
+func (r *Runner) lookupIPs(ctx context.Context, hostname string) (ipv4 net.IP, ipv6 net.IP, err error) {
 	ips, err := r.resolver.LookupIP(ctx, "ip", hostname)
 	if err != nil {
 		return nil, nil, err
@@ -95,7 +87,7 @@ func doIPVersion(records []librecords.Record) (doIP, doIPv4, doIPv6 bool) {
 	return doIP, doIPv4, doIPv6
 }
 
-func (r *runner) getNewIPs(ctx context.Context, doIP, doIPv4, doIPv6 bool, ipv6Mask net.IPMask) (
+func (r *Runner) getNewIPs(ctx context.Context, doIP, doIPv4, doIPv6 bool, ipv6Mask net.IPMask) (
 	ip, ipv4, ipv6 net.IP, errors []error) {
 	var err error
 	if doIP {
@@ -123,18 +115,19 @@ func (r *runner) getNewIPs(ctx context.Context, doIP, doIPv4, doIPv6 bool, ipv6M
 	return ip, ipv4, ipv6, errors
 }
 
-func (r *runner) getRecordIDsToUpdate(ctx context.Context, records []librecords.Record,
-	ip, ipv4, ipv6 net.IP, now time.Time, ipv6Mask net.IPMask) (recordIDs map[int]struct{}) {
-	recordIDs = make(map[int]struct{})
-	for id, record := range records {
+func (r *Runner) getRecordIDsToUpdate(ctx context.Context, records []librecords.Record,
+	ip, ipv4, ipv6 net.IP, now time.Time, ipv6Mask net.IPMask) (recordIDs map[uint]struct{}) {
+	recordIDs = make(map[uint]struct{})
+	for i, record := range records {
 		if shouldUpdate := r.shouldUpdateRecord(ctx, record, ip, ipv4, ipv6, now, ipv6Mask); shouldUpdate {
+			id := uint(i)
 			recordIDs[id] = struct{}{}
 		}
 	}
 	return recordIDs
 }
 
-func (r *runner) shouldUpdateRecord(ctx context.Context, record librecords.Record,
+func (r *Runner) shouldUpdateRecord(ctx context.Context, record librecords.Record,
 	ip, ipv4, ipv6 net.IP, now time.Time, ipv6Mask net.IPMask) (update bool) {
 	isWithinBanPeriod := record.LastBan != nil && now.Sub(*record.LastBan) < time.Hour
 	isWithinCooldown := now.Sub(record.History.GetSuccessTime()) < r.cooldown
@@ -153,7 +146,7 @@ func (r *runner) shouldUpdateRecord(ctx context.Context, record librecords.Recor
 	return r.shouldUpdateRecordWithLookup(ctx, hostname, ipVersion, ip, ipv4, ipv6, ipv6Mask)
 }
 
-func (r *runner) shouldUpdateRecordNoLookup(hostname string, ipVersion ipversion.IPVersion,
+func (r *Runner) shouldUpdateRecordNoLookup(hostname string, ipVersion ipversion.IPVersion,
 	lastIP, ip, ipv4, ipv6 net.IP) (update bool) {
 	switch ipVersion {
 	case ipversion.IP4or6:
@@ -184,13 +177,14 @@ func (r *runner) shouldUpdateRecordNoLookup(hostname string, ipVersion ipversion
 	return false
 }
 
-func (r *runner) shouldUpdateRecordWithLookup(ctx context.Context, hostname string, ipVersion ipversion.IPVersion,
+func (r *Runner) shouldUpdateRecordWithLookup(ctx context.Context, hostname string, ipVersion ipversion.IPVersion,
 	ip, ipv4, ipv6 net.IP, ipv6Mask net.IPMask) (update bool) {
 	const tries = 5
 	recordIPv4, recordIPv6, err := r.lookupIPsResilient(ctx, hostname, tries)
 	if err != nil {
-		if err := ctx.Err(); err != nil {
-			r.logger.Warn("DNS resolution of " + hostname + ": " + err.Error())
+		ctxErr := ctx.Err()
+		if ctxErr != nil {
+			r.logger.Warn("DNS resolution of " + hostname + ": " + ctxErr.Error())
 			return false
 		}
 		r.logger.Warn("cannot DNS resolve " + hostname + " after " +
@@ -246,7 +240,7 @@ func getIPMatchingVersion(ip, ipv4, ipv6 net.IP, ipVersion ipversion.IPVersion) 
 	return nil
 }
 
-func setInitialUpToDateStatus(db data.Database, id int, updateIP net.IP, now time.Time) error {
+func setInitialUpToDateStatus(db Database, id uint, updateIP net.IP, now time.Time) error {
 	record, err := db.Select(id)
 	if err != nil {
 		return err
@@ -262,7 +256,7 @@ func setInitialUpToDateStatus(db data.Database, id int, updateIP net.IP, now tim
 	return db.Update(id, record)
 }
 
-func (r *runner) updateNecessary(ctx context.Context, ipv6Mask net.IPMask) (errors []error) {
+func (r *Runner) updateNecessary(ctx context.Context, ipv6Mask net.IPMask) (errors []error) {
 	records := r.db.SelectAll()
 	doIP, doIPv4, doIPv6 := doIPVersion(records)
 	r.logger.Debug(fmt.Sprintf("configured to fetch IP: v4 or v6: %t, v4: %t, v6: %t", doIP, doIPv4, doIPv6))
@@ -275,13 +269,15 @@ func (r *runner) updateNecessary(ctx context.Context, ipv6Mask net.IPMask) (erro
 	now := r.timeNow()
 	recordIDs := r.getRecordIDsToUpdate(ctx, records, ip, ipv4, ipv6, now, ipv6Mask)
 
-	for id, record := range records {
+	for i, record := range records {
+		id := uint(i)
 		_, requireUpdate := recordIDs[id]
 		if requireUpdate || record.Status != constants.UNSET {
 			continue
 		}
 		updateIP := getIPMatchingVersion(ip, ipv4, ipv6, record.Settings.IPVersion())
-		if err := setInitialUpToDateStatus(r.db, id, updateIP, now); err != nil {
+		err := setInitialUpToDateStatus(r.db, id, updateIP, now)
+		if err != nil {
 			errors = append(errors, err)
 			r.logger.Error(err.Error())
 		}
@@ -290,7 +286,8 @@ func (r *runner) updateNecessary(ctx context.Context, ipv6Mask net.IPMask) (erro
 		record := records[id]
 		updateIP := getIPMatchingVersion(ip, ipv4, ipv6, record.Settings.IPVersion())
 		r.logger.Info("Updating record " + record.Settings.String() + " to use " + updateIP.String())
-		if err := r.updater.Update(ctx, id, updateIP, r.timeNow()); err != nil {
+		err := r.updater.Update(ctx, id, updateIP, r.timeNow())
+		if err != nil {
 			errors = append(errors, err)
 			r.logger.Error(err.Error())
 		}
@@ -299,7 +296,7 @@ func (r *runner) updateNecessary(ctx context.Context, ipv6Mask net.IPMask) (erro
 	return errors
 }
 
-func (r *runner) Run(ctx context.Context, done chan<- struct{}) {
+func (r *Runner) Run(ctx context.Context, done chan<- struct{}) {
 	defer close(done)
 	ticker := time.NewTicker(r.period)
 	for {
@@ -315,7 +312,7 @@ func (r *runner) Run(ctx context.Context, done chan<- struct{}) {
 	}
 }
 
-func (r *runner) ForceUpdate(ctx context.Context) (errs []error) {
+func (r *Runner) ForceUpdate(ctx context.Context) (errs []error) {
 	r.force <- struct{}{}
 
 	select {

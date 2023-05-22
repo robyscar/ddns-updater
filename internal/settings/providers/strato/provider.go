@@ -18,7 +18,7 @@ import (
 	"github.com/qdm12/ddns-updater/pkg/publicip/ipversion"
 )
 
-type provider struct {
+type Provider struct {
 	domain        string
 	host          string
 	ipVersion     ipversion.IPVersion
@@ -27,62 +27,64 @@ type provider struct {
 }
 
 func New(data json.RawMessage, domain, host string,
-	ipVersion ipversion.IPVersion) (p *provider, err error) {
+	ipVersion ipversion.IPVersion) (p *Provider, err error) {
 	extraSettings := struct {
 		Password      string `json:"password"`
 		UseProviderIP bool   `json:"provider_ip"`
 	}{}
-	if err := json.Unmarshal(data, &extraSettings); err != nil {
+	err = json.Unmarshal(data, &extraSettings)
+	if err != nil {
 		return nil, err
 	}
-	p = &provider{
+	p = &Provider{
 		domain:        domain,
 		host:          host,
 		ipVersion:     ipVersion,
 		password:      extraSettings.Password,
 		useProviderIP: extraSettings.UseProviderIP,
 	}
-	if err := p.isValid(); err != nil {
+	err = p.isValid()
+	if err != nil {
 		return nil, err
 	}
 	return p, nil
 }
 
-func (p *provider) isValid() error {
+func (p *Provider) isValid() error {
 	switch {
-	case len(p.password) == 0:
-		return errors.ErrEmptyPassword
+	case p.password == "":
+		return fmt.Errorf("%w", errors.ErrEmptyPassword)
 	case p.host == "*":
-		return errors.ErrHostWildcard
+		return fmt.Errorf("%w", errors.ErrHostWildcard)
 	}
 	return nil
 }
 
-func (p *provider) String() string {
+func (p *Provider) String() string {
 	return fmt.Sprintf("[domain: %s | host: %s | provider: Strato]", p.domain, p.host)
 }
 
-func (p *provider) Domain() string {
+func (p *Provider) Domain() string {
 	return p.domain
 }
 
-func (p *provider) Host() string {
+func (p *Provider) Host() string {
 	return p.host
 }
 
-func (p *provider) IPVersion() ipversion.IPVersion {
+func (p *Provider) IPVersion() ipversion.IPVersion {
 	return p.ipVersion
 }
 
-func (p *provider) Proxied() bool {
+func (p *Provider) Proxied() bool {
 	return false
 }
 
-func (p *provider) BuildDomainName() string {
+func (p *Provider) BuildDomainName() string {
 	return utils.BuildDomainName(p.host, p.domain)
 }
 
-func (p *provider) HTML() models.HTMLRow {
+func (p *Provider) HTML() models.HTMLRow {
 	return models.HTMLRow{
 		Domain:    models.HTML(fmt.Sprintf("<a href=\"http://%s\">%s</a>", p.BuildDomainName(), p.BuildDomainName())),
 		Host:      models.HTML(p.Host()),
@@ -91,7 +93,7 @@ func (p *provider) HTML() models.HTMLRow {
 	}
 }
 
-func (p *provider) Update(ctx context.Context, client *http.Client, ip net.IP) (newIP net.IP, err error) {
+func (p *Provider) Update(ctx context.Context, client *http.Client, ip net.IP) (newIP net.IP, err error) {
 	u := url.URL{
 		Scheme: "https",
 		User:   url.UserPassword(p.domain, p.password),
@@ -119,7 +121,7 @@ func (p *provider) Update(ctx context.Context, client *http.Client, ip net.IP) (
 
 	b, err := io.ReadAll(response.Body)
 	if err != nil {
-		return nil, fmt.Errorf("%w: %s", errors.ErrUnmarshalResponse, err)
+		return nil, fmt.Errorf("%w: %w", errors.ErrUnmarshalResponse, err)
 	}
 	str := string(b)
 
@@ -129,13 +131,13 @@ func (p *provider) Update(ctx context.Context, client *http.Client, ip net.IP) (
 
 	switch {
 	case strings.HasPrefix(str, constants.Notfqdn):
-		return nil, errors.ErrHostnameNotExists
+		return nil, fmt.Errorf("%w", errors.ErrHostnameNotExists)
 	case strings.HasPrefix(str, constants.Abuse):
-		return nil, errors.ErrAbuse
+		return nil, fmt.Errorf("%w", errors.ErrAbuse)
 	case strings.HasPrefix(str, "badrequest"):
-		return nil, errors.ErrBadRequest
+		return nil, fmt.Errorf("%w", errors.ErrBadRequest)
 	case strings.HasPrefix(str, "constants.Badauth"):
-		return nil, errors.ErrAuth
+		return nil, fmt.Errorf("%w", errors.ErrAuth)
 	case strings.HasPrefix(str, "good"), strings.HasPrefix(str, "nochg"):
 		return ip, nil
 	default:

@@ -17,7 +17,7 @@ import (
 	"github.com/qdm12/ddns-updater/pkg/publicip/ipversion"
 )
 
-type provider struct {
+type Provider struct {
 	domain    string
 	host      string
 	ttl       int
@@ -26,59 +26,61 @@ type provider struct {
 }
 
 func New(data json.RawMessage, domain, host string,
-	ipVersion ipversion.IPVersion) (p *provider, err error) {
+	ipVersion ipversion.IPVersion) (p *Provider, err error) {
 	extraSettings := struct {
 		Key string `json:"key"`
 		TTL int    `json:"ttl"`
 	}{}
-	if err := json.Unmarshal(data, &extraSettings); err != nil {
+	err = json.Unmarshal(data, &extraSettings)
+	if err != nil {
 		return nil, err
 	}
-	p = &provider{
+	p = &Provider{
 		domain:    domain,
 		host:      host,
 		ipVersion: ipVersion,
 		key:       extraSettings.Key,
 		ttl:       extraSettings.TTL,
 	}
-	if err := p.isValid(); err != nil {
+	err = p.isValid()
+	if err != nil {
 		return nil, err
 	}
 	return p, nil
 }
 
-func (p *provider) isValid() error {
-	if len(p.key) == 0 {
-		return errors.ErrEmptyKey
+func (p *Provider) isValid() error {
+	if p.key == "" {
+		return fmt.Errorf("%w", errors.ErrEmptyKey)
 	}
 	return nil
 }
 
-func (p *provider) String() string {
+func (p *Provider) String() string {
 	return utils.ToString(p.domain, p.host, constants.Gandi, p.ipVersion)
 }
 
-func (p *provider) Domain() string {
+func (p *Provider) Domain() string {
 	return p.domain
 }
 
-func (p *provider) Host() string {
+func (p *Provider) Host() string {
 	return p.host
 }
 
-func (p *provider) IPVersion() ipversion.IPVersion {
+func (p *Provider) IPVersion() ipversion.IPVersion {
 	return p.ipVersion
 }
 
-func (p *provider) Proxied() bool {
+func (p *Provider) Proxied() bool {
 	return false
 }
 
-func (p *provider) BuildDomainName() string {
+func (p *Provider) BuildDomainName() string {
 	return utils.BuildDomainName(p.host, p.domain)
 }
 
-func (p *provider) HTML() models.HTMLRow {
+func (p *Provider) HTML() models.HTMLRow {
 	return models.HTMLRow{
 		Domain:    models.HTML(fmt.Sprintf("<a href=\"http://%s\">%s</a>", p.BuildDomainName(), p.BuildDomainName())),
 		Host:      models.HTML(p.Host()),
@@ -87,14 +89,14 @@ func (p *provider) HTML() models.HTMLRow {
 	}
 }
 
-func (p *provider) setHeaders(request *http.Request) {
+func (p *Provider) setHeaders(request *http.Request) {
 	headers.SetUserAgent(request)
 	headers.SetContentType(request, "application/json")
 	headers.SetAccept(request, "application/json")
 	request.Header.Set("X-Api-Key", p.key)
 }
 
-func (p *provider) Update(ctx context.Context, client *http.Client, ip net.IP) (newIP net.IP, err error) {
+func (p *Provider) Update(ctx context.Context, client *http.Client, ip net.IP) (newIP net.IP, err error) {
 	recordType := constants.A
 	var ipStr string
 	if ip.To4() == nil { // IPv6
@@ -124,8 +126,9 @@ func (p *provider) Update(ctx context.Context, client *http.Client, ip net.IP) (
 		Values: [1]string{ipStr},
 		TTL:    ttl,
 	}
-	if err := encoder.Encode(requestData); err != nil {
-		return nil, fmt.Errorf("%w: %s", errors.ErrRequestEncode, err)
+	err = encoder.Encode(requestData)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %w", errors.ErrRequestEncode, err)
 	}
 
 	request, err := http.NewRequestWithContext(ctx, http.MethodPut, u.String(), buffer)

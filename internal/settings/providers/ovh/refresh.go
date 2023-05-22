@@ -9,7 +9,7 @@ import (
 	"github.com/qdm12/ddns-updater/internal/settings/errors"
 )
 
-func (p *provider) refresh(ctx context.Context, client *http.Client, timestamp int64) (err error) {
+func (p *Provider) refresh(ctx context.Context, client *http.Client, timestamp int64) (err error) {
 	u := url.URL{
 		Scheme: p.apiURL.Scheme,
 		Host:   p.apiURL.Host,
@@ -18,14 +18,14 @@ func (p *provider) refresh(ctx context.Context, client *http.Client, timestamp i
 
 	request, err := http.NewRequestWithContext(ctx, http.MethodPost, u.String(), nil)
 	if err != nil {
-		return fmt.Errorf("%w: %s", errors.ErrBadRequest, err)
+		return fmt.Errorf("%w: %w", errors.ErrBadRequest, err)
 	}
 	p.setHeaderCommon(request.Header)
 	p.setHeaderAuth(request.Header, timestamp, request.Method, request.URL, nil)
 
 	response, err := client.Do(request)
 	if err != nil {
-		return fmt.Errorf("%w: %s", errors.ErrUnsuccessfulResponse, err)
+		return fmt.Errorf("%w: %w", errors.ErrUnsuccessfulResponse, err)
 	}
 
 	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {

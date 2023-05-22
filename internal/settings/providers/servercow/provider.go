@@ -18,7 +18,7 @@ import (
 	"github.com/qdm12/ddns-updater/pkg/publicip/ipversion"
 )
 
-type provider struct {
+type Provider struct {
 	username      string
 	host          string
 	domain        string
@@ -29,7 +29,7 @@ type provider struct {
 }
 
 func New(data json.RawMessage, domain, host string, ipVersion ipversion.IPVersion) (
-	p *provider, err error) {
+	p *Provider, err error) {
 	extraSettings := struct {
 		Username      string `json:"username"`
 		Password      string `json:"password"`
@@ -37,11 +37,12 @@ func New(data json.RawMessage, domain, host string, ipVersion ipversion.IPVersio
 		TTL           uint   `json:"ttl"`
 		UseProviderIP bool   `json:"provider_ip"`
 	}{}
-	if err := json.Unmarshal(data, &extraSettings); err != nil {
+	err = json.Unmarshal(data, &extraSettings)
+	if err != nil {
 		return nil, err
 	}
 
-	p = &provider{
+	p = &Provider{
 		host:          host,
 		ipVersion:     ipVersion,
 		username:      extraSettings.Username,
@@ -50,50 +51,51 @@ func New(data json.RawMessage, domain, host string, ipVersion ipversion.IPVersio
 		domain:        extraSettings.Domain,
 		ttl:           extraSettings.TTL,
 	}
-	if err := p.isValid(); err != nil {
+	err = p.isValid()
+	if err != nil {
 		return nil, err
 	}
 	return p, nil
 }
 
-func (p *provider) isValid() error {
+func (p *Provider) isValid() error {
 	switch {
 	case p.username == "":
-		return errors.ErrEmptyUsername
+		return fmt.Errorf("%w", errors.ErrEmptyUsername)
 	case p.password == "":
-		return errors.ErrEmptyPassword
+		return fmt.Errorf("%w", errors.ErrEmptyPassword)
 	}
 	if strings.Contains(p.host, "*") {
-		return errors.ErrHostWildcard
+		return fmt.Errorf("%w", errors.ErrHostWildcard)
 	}
 	return nil
 }
 
-func (p *provider) String() string {
+func (p *Provider) String() string {
 	return utils.ToString("servercow.de", p.host, constants.Servercow, p.ipVersion)
 }
 
-func (p *provider) Domain() string {
+func (p *Provider) Domain() string {
 	return p.domain
 }
 
-func (p *provider) Host() string {
+func (p *Provider) Host() string {
 	return p.host
 }
 
-func (p *provider) IPVersion() ipversion.IPVersion {
+func (p *Provider) IPVersion() ipversion.IPVersion {
 	return p.ipVersion
 }
 
-func (p *provider) Proxied() bool {
+func (p *Provider) Proxied() bool {
 	return false
 }
 
-func (p *provider) BuildDomainName() string {
+func (p *Provider) BuildDomainName() string {
 	return utils.BuildDomainName(p.host, p.domain)
 }
 
-func (p *provider) HTML() models.HTMLRow {
+func (p *Provider) HTML() models.HTMLRow {
 	return models.HTMLRow{
 		Domain:    models.HTML(fmt.Sprintf("<a href=\"http://%s\">%s</a>", p.BuildDomainName(), p.BuildDomainName())),
 		Host:      models.HTML(p.Host()),
@@ -102,7 +104,7 @@ func (p *provider) HTML() models.HTMLRow {
 	}
 }
 
-func (p *provider) Update(ctx context.Context, client *http.Client, ip net.IP) (newIP net.IP, err error) {
+func (p *Provider) Update(ctx context.Context, client *http.Client, ip net.IP) (newIP net.IP, err error) {
 	recordType := constants.A
 	if ip.To4() == nil {
 		recordType = constants.AAAA
@@ -132,8 +134,9 @@ func (p *provider) Update(ctx context.Context, client *http.Client, ip net.IP) (
 
 	buffer := bytes.NewBuffer(nil)
 	encoder := json.NewEncoder(buffer)
-	if err := encoder.Encode(requestData); err != nil {
-		return nil, fmt.Errorf("%w: %s", errors.ErrRequestEncode, err)
+	err = encoder.Encode(requestData)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %w", errors.ErrRequestEncode, err)
 	}
 
 	request, err := http.NewRequestWithContext(ctx, http.MethodPost, u.String(), buffer)
@@ -163,8 +166,9 @@ func (p *provider) Update(ctx context.Context, client *http.Client, ip net.IP) (
 		Error   string `json:"error"`
 	}
 
-	if err := decoder.Decode(&parsedJSON); err != nil {
-		return nil, fmt.Errorf("%w: %s", errors.ErrUnmarshalResponse, err)
+	err = decoder.Decode(&parsedJSON)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %w", errors.ErrUnmarshalResponse, err)
 	}
 
 	if parsedJSON.Message != "ok" {

@@ -3,7 +3,6 @@ package http
 import (
 	"bytes"
 	"context"
-	"errors"
 	"io"
 	"net"
 	"net/http"
@@ -12,12 +11,9 @@ import (
 
 	"github.com/qdm12/ddns-updater/pkg/publicip/ipversion"
 	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
 )
 
-func uint32Ptr(n uint32) *uint32 { return &n }
-
-func Test_fetcher_IP(t *testing.T) { //nolint:dupl
+func Test_fetcher_IP(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
@@ -35,20 +31,20 @@ func Test_fetcher_IP(t *testing.T) { //nolint:dupl
 		}),
 	}
 
-	initialFetcher := &fetcher{
+	initialFetcher := &Fetcher{
 		client:  client,
 		timeout: time.Hour,
-		ip4or6: urlsRing{
-			counter: uint32Ptr(1),
-			urls:    []string{"a", "b", "c"},
+		ip4or6: &urlsRing{
+			index: 1,
+			urls:  []string{"a", "b", "c"},
 		},
 	}
-	expectedFetcher := &fetcher{
+	expectedFetcher := &Fetcher{
 		client:  client,
 		timeout: time.Hour,
-		ip4or6: urlsRing{
-			counter: uint32Ptr(2),
-			urls:    []string{"a", "b", "c"},
+		ip4or6: &urlsRing{
+			index: 2,
+			urls:  []string{"a", "b", "c"},
 		},
 	}
 
@@ -61,7 +57,7 @@ func Test_fetcher_IP(t *testing.T) { //nolint:dupl
 	assert.Equal(t, expectedFetcher, initialFetcher)
 }
 
-func Test_fetcher_IP4(t *testing.T) { //nolint:dupl
+func Test_fetcher_IP4(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
@@ -79,20 +75,20 @@ func Test_fetcher_IP4(t *testing.T) { //nolint:dupl
 		}),
 	}
 
-	initialFetcher := &fetcher{
+	initialFetcher := &Fetcher{
 		client:  client,
 		timeout: time.Hour,
-		ip4: urlsRing{
-			counter: uint32Ptr(1),
-			urls:    []string{"a", "b", "c"},
+		ip4: &urlsRing{
+			index: 1,
+			urls:  []string{"a", "b", "c"},
 		},
 	}
-	expectedFetcher := &fetcher{
+	expectedFetcher := &Fetcher{
 		client:  client,
 		timeout: time.Hour,
-		ip4: urlsRing{
-			counter: uint32Ptr(2),
-			urls:    []string{"a", "b", "c"},
+		ip4: &urlsRing{
+			index: 2,
+			urls:  []string{"a", "b", "c"},
 		},
 	}
 
@@ -126,20 +122,20 @@ func Test_fetcher_IP6(t *testing.T) {
 		}),
 	}
 
-	initialFetcher := &fetcher{
+	initialFetcher := &Fetcher{
 		client:  client,
 		timeout: time.Hour,
-		ip6: urlsRing{
-			counter: uint32Ptr(1),
-			urls:    []string{"a", "b", "c"},
+		ip6: &urlsRing{
+			index: 1,
+			urls:  []string{"a", "b", "c"},
 		},
 	}
-	expectedFetcher := &fetcher{
+	expectedFetcher := &Fetcher{
 		client:  client,
 		timeout: time.Hour,
-		ip6: urlsRing{
-			counter: uint32Ptr(2),
-			urls:    []string{"a", "b", "c"},
+		ip6: &urlsRing{
+			index: 2,
+			urls:  []string{"a", "b", "c"},
 		},
 	}
 
@@ -158,18 +154,19 @@ func Test_fetcher_ip(t *testing.T) {
 	canceledCtx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	newTestClient := func(expectedURL string, httpBytes []byte, httpErr error) *http.Client {
+	newTestClient := func(expectedURL string, status int, httpBytes []byte, httpErr error) *http.Client {
 		return &http.Client{
 			Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
 				assert.Equal(t, expectedURL, r.URL.String())
-				if err := r.Context().Err(); err != nil {
+				err := r.Context().Err()
+				if err != nil {
 					return nil, err
 				}
 				if httpErr != nil {
 					return nil, httpErr
 				}
 				return &http.Response{
-					StatusCode: http.StatusOK,
+					StatusCode: status,
 					Body:       io.NopCloser(bytes.NewReader(httpBytes)),
 				}, nil
 			}),
@@ -177,104 +174,150 @@ func Test_fetcher_ip(t *testing.T) {
 	}
 
 	testCases := map[string]struct {
-		initialFetcher *fetcher
+		initialFetcher *Fetcher
 		ctx            context.Context
 		publicIP       net.IP
 		err            error
-		finalFetcher   *fetcher // client is ignored when comparing the two
+		errMessage     string
+		finalFetcher   *Fetcher // client is ignored when comparing the two
 	}{
 		"first run": {
 			ctx: context.Background(),
-			initialFetcher: &fetcher{
+			initialFetcher: &Fetcher{
 				timeout: time.Hour,
-				client:  newTestClient("b", []byte(`55.55.55.55`), nil),
-				ip4or6: urlsRing{
-					counter: uint32Ptr(0),
-					urls:    []string{"a", "b"},
+				client:  newTestClient("b", http.StatusOK, []byte(`55.55.55.55`), nil),
+				ip4or6: &urlsRing{
+					index: 0,
+					urls:  []string{"a", "b"},
 				},
 			},
 			publicIP: net.IP{55, 55, 55, 55},
-			finalFetcher: &fetcher{
+			finalFetcher: &Fetcher{
 				timeout: time.Hour,
-				ip4or6: urlsRing{
-					counter: uint32Ptr(1),
-					urls:    []string{"a", "b"},
+				ip4or6: &urlsRing{
+					index: 1,
+					urls:  []string{"a", "b"},
 				},
 			},
 		},
 		"second run": {
 			ctx: context.Background(),
-			initialFetcher: &fetcher{
+			initialFetcher: &Fetcher{
 				timeout: time.Hour,
-				client:  newTestClient("a", []byte(`55.55.55.55`), nil),
-				ip4or6: urlsRing{
-					counter: uint32Ptr(1),
-					urls:    []string{"a", "b"},
+				client:  newTestClient("a", http.StatusOK, []byte(`55.55.55.55`), nil),
+				ip4or6: &urlsRing{
+					index: 1,
+					urls:  []string{"a", "b"},
 				},
 			},
 			publicIP: net.IP{55, 55, 55, 55},
-			finalFetcher: &fetcher{
+			finalFetcher: &Fetcher{
 				timeout: time.Hour,
-				ip4or6: urlsRing{
-					counter: uint32Ptr(2),
-					urls:    []string{"a", "b"},
-				},
-			},
-		},
-		"max uint32": {
-			ctx: context.Background(),
-			initialFetcher: &fetcher{
-				timeout: time.Hour,
-				client:  newTestClient("a", []byte(`55.55.55.55`), nil),
-				ip4or6: urlsRing{
-					counter: uint32Ptr(^uint32(0)),
-					urls:    []string{"a", "b"},
-				},
-			},
-			publicIP: net.IP{55, 55, 55, 55},
-			finalFetcher: &fetcher{
-				timeout: time.Hour,
-				ip4or6: urlsRing{
-					counter: uint32Ptr(0),
-					urls:    []string{"a", "b"},
+				ip4or6: &urlsRing{
+					index: 0,
+					urls:  []string{"a", "b"},
 				},
 			},
 		},
 		"zero timeout": {
 			ctx: context.Background(),
-			initialFetcher: &fetcher{
-				client: newTestClient("a", nil, nil),
-				ip4or6: urlsRing{
-					counter: uint32Ptr(1),
-					urls:    []string{"a", "b"},
+			initialFetcher: &Fetcher{
+				client: newTestClient("a", 0, nil, nil),
+				ip4or6: &urlsRing{
+					index: 1,
+					urls:  []string{"a", "b"},
 				},
 			},
-			finalFetcher: &fetcher{
-				ip4or6: urlsRing{
-					counter: uint32Ptr(2),
-					urls:    []string{"a", "b"},
+			finalFetcher: &Fetcher{
+				ip4or6: &urlsRing{
+					index: 0,
+					urls:  []string{"a", "b"},
 				},
 			},
-			err: errors.New(`Get "a": context deadline exceeded`),
+			err:        context.DeadlineExceeded,
+			errMessage: `Get "a": context deadline exceeded`,
 		},
 		"canceled context": {
 			ctx: canceledCtx,
-			initialFetcher: &fetcher{
+			initialFetcher: &Fetcher{
 				timeout: time.Hour,
-				client:  newTestClient("a", nil, nil),
-				ip4or6: urlsRing{
-					counter: uint32Ptr(1),
-					urls:    []string{"a", "b"},
+				client:  newTestClient("a", 0, nil, nil),
+				ip4or6: &urlsRing{
+					index: 1,
+					urls:  []string{"a", "b"},
 				},
 			},
-			finalFetcher: &fetcher{
+			finalFetcher: &Fetcher{
 				timeout: time.Hour,
-				ip4or6: urlsRing{
-					counter: uint32Ptr(2),
-					urls:    []string{"a", "b"},
+				ip4or6: &urlsRing{
+					index: 0,
+					urls:  []string{"a", "b"},
 				},
 			},
-			err: errors.New(`Get "a": context canceled`),
+			err:        context.Canceled,
+			errMessage: `Get "a": context canceled`,
+		},
+		"try next if banned": {
+			ctx: context.Background(),
+			initialFetcher: &Fetcher{
+				timeout: time.Hour,
+				client:  newTestClient("a", http.StatusOK, []byte(`55.55.55.55`), nil),
+				ip4or6: &urlsRing{
+					index:  0,
+					urls:   []string{"a", "b"},
+					banned: map[int]string{1: "banned"},
+				},
+			},
+			finalFetcher: &Fetcher{
+				timeout: time.Hour,
+				ip4or6: &urlsRing{
+					index:  0,
+					urls:   []string{"a", "b"},
+					banned: map[int]string{1: "banned"},
+				},
+			},
+			publicIP: net.IP{55, 55, 55, 55},
+		},
+		"all banned": {
+			ctx: context.Background(),
+			initialFetcher: &Fetcher{
+				ip4or6: &urlsRing{
+					index:  1,
+					urls:   []string{"a", "b"},
+					banned: map[int]string{0: "banned", 1: "banned again"},
+				},
+			},
+			finalFetcher: &Fetcher{
+				ip4or6: &urlsRing{
+					index:  1,
+					urls:   []string{"a", "b"},
+					banned: map[int]string{0: "banned", 1: "banned again"},
+				},
+			},
+			err:        ErrBanned,
+			errMessage: "we got banned: banned (a), banned again (b)",
+		},
+		"record banned": {
+			ctx: context.Background(),
+			initialFetcher: &Fetcher{
+				timeout: time.Hour,
+				client:  newTestClient("a", http.StatusTooManyRequests, []byte(`get out`), nil),
+				ip4or6: &urlsRing{
+					index:  1,
+					urls:   []string{"a", "b"},
+					banned: map[int]string{},
+				},
+			},
+			finalFetcher: &Fetcher{
+				timeout: time.Hour,
+				ip4or6: &urlsRing{
+					index:  0,
+					urls:   []string{"a", "b"},
+					banned: map[int]string{0: "429 (get out)"},
+				},
+			},
+			err:        ErrBanned,
+			errMessage: "we got banned: 429 (get out)",
 		},
 	}
 
@@ -287,11 +330,9 @@ func Test_fetcher_ip(t *testing.T) {
 
 			publicIP, err := testCase.initialFetcher.ip(testCase.ctx, urlRing, ipversion.IP4or6)
 
+			assert.ErrorIs(t, err, testCase.err)
 			if testCase.err != nil {
-				require.Error(t, err)
-				assert.Equal(t, testCase.err.Error(), err.Error())
-			} else {
-				assert.NoError(t, err)
+				assert.EqualError(t, err, testCase.errMessage)
 			}
 
 			if !testCase.publicIP.Equal(publicIP) {

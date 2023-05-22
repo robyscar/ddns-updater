@@ -14,26 +14,22 @@ func IsClientMode(args []string) bool {
 	return len(args) > 1 && args[1] == "healthcheck"
 }
 
-type Client interface {
-	Query(ctx context.Context, port uint16) error
-}
-
-type client struct {
+type Client struct {
 	*http.Client
 }
 
-func NewClient() Client {
+func NewClient() *Client {
 	const timeout = 5 * time.Second
-	return &client{
+	return &Client{
 		Client: &http.Client{Timeout: timeout},
 	}
 }
 
-var ErrParseHealthServerAddress = errors.New("cannot parse health server address")
+var ErrUnhealthy = errors.New("program is unhealthy")
 
 // Query sends an HTTP request to the other instance of
 // the program, and to its internal healthcheck server.
-func (c *client) Query(ctx context.Context, port uint16) error {
+func (c *Client) Query(ctx context.Context, port uint16) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://127.0.0.1:"+strconv.Itoa(int(port)), nil)
 	if err != nil {
 		return err
@@ -50,8 +46,8 @@ func (c *client) Query(ctx context.Context, port uint16) error {
 
 	b, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return fmt.Errorf("%s: %s", resp.Status, err)
+		return fmt.Errorf("reading body from response with status %s: %w", resp.Status, err)
 	}
 
-	return fmt.Errorf(string(b))
+	return fmt.Errorf("%w: %s", ErrUnhealthy, string(b))
 }

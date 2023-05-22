@@ -18,7 +18,7 @@ import (
 	"github.com/qdm12/ddns-updater/pkg/publicip/ipversion"
 )
 
-type provider struct {
+type Provider struct {
 	domain        string
 	host          string
 	group         string
@@ -29,14 +29,15 @@ type provider struct {
 }
 
 func New(data json.RawMessage, domain, host string,
-	ipVersion ipversion.IPVersion) (p *provider, err error) {
+	ipVersion ipversion.IPVersion) (p *Provider, err error) {
 	extraSettings := struct {
 		Username      string `json:"username"`
 		Password      string `json:"password"`
 		UseProviderIP bool   `json:"provider_ip"`
 		Group         string `json:"group"`
 	}{}
-	if err := json.Unmarshal(data, &extraSettings); err != nil {
+	err = json.Unmarshal(data, &extraSettings)
+	if err != nil {
 		return nil, err
 	}
 
@@ -44,7 +45,7 @@ func New(data json.RawMessage, domain, host string,
 		host = "@" // default
 	}
 
-	p = &provider{
+	p = &Provider{
 		domain:        domain,
 		host:          host,
 		ipVersion:     ipVersion,
@@ -53,49 +54,50 @@ func New(data json.RawMessage, domain, host string,
 		password:      extraSettings.Password,
 		useProviderIP: extraSettings.UseProviderIP,
 	}
-	if err := p.isValid(); err != nil {
+	err = p.isValid()
+	if err != nil {
 		return nil, err
 	}
 	return p, nil
 }
 
-func (p *provider) isValid() error {
+func (p *Provider) isValid() error {
 	switch {
 	case p.username == "":
-		return errors.ErrEmptyUsername
+		return fmt.Errorf("%w", errors.ErrEmptyUsername)
 	case p.password == "":
-		return errors.ErrEmptyPassword
+		return fmt.Errorf("%w", errors.ErrEmptyPassword)
 	case p.host == "*":
-		return errors.ErrHostWildcard
+		return fmt.Errorf("%w", errors.ErrHostWildcard)
 	}
 	return nil
 }
 
-func (p *provider) String() string {
+func (p *Provider) String() string {
 	return utils.ToString(p.domain, p.host, constants.Dynu, p.ipVersion)
 }
 
-func (p *provider) Domain() string {
+func (p *Provider) Domain() string {
 	return p.domain
 }
 
-func (p *provider) Host() string {
+func (p *Provider) Host() string {
 	return p.host
 }
 
-func (p *provider) IPVersion() ipversion.IPVersion {
+func (p *Provider) IPVersion() ipversion.IPVersion {
 	return p.ipVersion
 }
 
-func (p *provider) Proxied() bool {
+func (p *Provider) Proxied() bool {
 	return false
 }
 
-func (p *provider) BuildDomainName() string {
+func (p *Provider) BuildDomainName() string {
 	return utils.BuildDomainName(p.host, p.domain)
 }
 
-func (p *provider) HTML() models.HTMLRow {
+func (p *Provider) HTML() models.HTMLRow {
 	return models.HTMLRow{
 		Domain:    models.HTML(fmt.Sprintf("<a href=\"http://%s\">%s</a>", p.BuildDomainName(), p.BuildDomainName())),
 		Host:      models.HTML(p.Host()),
@@ -104,7 +106,7 @@ func (p *provider) HTML() models.HTMLRow {
 	}
 }
 
-func (p *provider) Update(ctx context.Context, client *http.Client, ip net.IP) (newIP net.IP, err error) {
+func (p *Provider) Update(ctx context.Context, client *http.Client, ip net.IP) (newIP net.IP, err error) {
 	u := url.URL{
 		Scheme: "https",
 		Host:   "api.dynu.com",
@@ -114,12 +116,8 @@ func (p *provider) Update(ctx context.Context, client *http.Client, ip net.IP) (
 	values.Set("username", p.username)
 	values.Set("password", p.password)
 	values.Set("location", p.group)
-	if p.host != "@" {
-		values.Set("alias", p.host)
-		values.Set("hostname", p.domain)
-	} else {
-		values.Set("hostname", p.domain)
-	}
+	hostname := utils.BuildDomainName(p.host, p.domain)
+	values.Set("hostname", hostname)
 	if !p.useProviderIP {
 		if ip.To4() == nil {
 			values.Set("myipv6", ip.String())
@@ -131,19 +129,19 @@ func (p *provider) Update(ctx context.Context, client *http.Client, ip net.IP) (
 
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
 	if err != nil {
-		return nil, fmt.Errorf("%w: %s", errors.ErrBadRequest, err)
+		return nil, fmt.Errorf("%w: %w", errors.ErrBadRequest, err)
 	}
 	headers.SetUserAgent(request)
 
 	response, err := client.Do(request)
 	if err != nil {
-		return nil, fmt.Errorf("%w: %s", errors.ErrUnsuccessfulResponse, err)
+		return nil, fmt.Errorf("%w: %w", errors.ErrUnsuccessfulResponse, err)
 	}
 	defer response.Body.Close()
 
 	b, err := io.ReadAll(response.Body)
 	if err != nil {
-		return nil, fmt.Errorf("%w: %s", errors.ErrUnmarshalResponse, err)
+		return nil, fmt.Errorf("%w: %w", errors.ErrUnmarshalResponse, err)
 	}
 	s := string(b)
 
@@ -154,11 +152,11 @@ func (p *provider) Update(ctx context.Context, client *http.Client, ip net.IP) (
 
 	switch {
 	case strings.Contains(s, constants.Badauth):
-		return nil, errors.ErrAuth
+		return nil, fmt.Errorf("%w", errors.ErrAuth)
 	case strings.Contains(s, constants.Notfqdn):
-		return nil, errors.ErrHostnameNotExists
+		return nil, fmt.Errorf("%w", errors.ErrHostnameNotExists)
 	case strings.Contains(s, constants.Abuse):
-		return nil, errors.ErrAbuse
+		return nil, fmt.Errorf("%w", errors.ErrAbuse)
 	case strings.Contains(s, "good"):
 		return ip, nil
 	case strings.Contains(s, "nochg"): // Updated but not changed

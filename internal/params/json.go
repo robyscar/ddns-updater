@@ -10,7 +10,6 @@ import (
 	"strings"
 
 	"github.com/qdm12/ddns-updater/internal/models"
-	"github.com/qdm12/ddns-updater/internal/regex"
 	"github.com/qdm12/ddns-updater/internal/settings"
 	"github.com/qdm12/ddns-updater/internal/settings/constants"
 	"github.com/qdm12/ddns-updater/pkg/publicip/ipversion"
@@ -29,7 +28,7 @@ type commonSettings struct {
 
 // JSONSettings obtain the update settings from the JSON content, first trying from the environment variable CONFIG
 // and then from the file config.json.
-func (r *reader) JSONSettings(filePath string) (
+func (r *Reader) JSONSettings(filePath string) (
 	allSettings []settings.Settings, warnings []string, err error) {
 	allSettings, warnings, err = r.getSettingsFromEnv(filePath)
 	if allSettings != nil || warnings != nil || err != nil {
@@ -41,7 +40,7 @@ func (r *reader) JSONSettings(filePath string) (
 var errWriteConfigToFile = errors.New("cannot write configuration to file")
 
 // getSettingsFromFile obtain the update settings from config.json.
-func (r *reader) getSettingsFromFile(filePath string) (
+func (r *Reader) getSettingsFromFile(filePath string) (
 	allSettings []settings.Settings, warnings []string, err error) {
 	r.logger.Info("reading JSON config from file " + filePath)
 	bytes, err := r.readFile(filePath)
@@ -56,7 +55,7 @@ func (r *reader) getSettingsFromFile(filePath string) (
 
 		err = r.writeFile(filePath, []byte(`{}`), mode)
 		if err != nil {
-			err = fmt.Errorf("%w: %s", errWriteConfigToFile, err)
+			err = fmt.Errorf("%w: %w", errWriteConfigToFile, err)
 		}
 		return nil, nil, err
 	}
@@ -67,7 +66,7 @@ func (r *reader) getSettingsFromFile(filePath string) (
 
 // getSettingsFromEnv obtain the update settings from the environment variable CONFIG.
 // If the settings are valid, they are written to the filePath.
-func (r *reader) getSettingsFromEnv(filePath string) (
+func (r *Reader) getSettingsFromEnv(filePath string) (
 	allSettings []settings.Settings, warnings []string, err error) {
 	s, err := r.env.Get("CONFIG", params.CaseSensitiveValue())
 	if err != nil {
@@ -86,13 +85,14 @@ func (r *reader) getSettingsFromEnv(filePath string) (
 	}
 
 	buffer := bytes.NewBuffer(nil)
-	if err := json.Indent(buffer, b, "", "  "); err != nil {
-		return allSettings, warnings, fmt.Errorf("%w: %s", errWriteConfigToFile, err)
+	err = json.Indent(buffer, b, "", "  ")
+	if err != nil {
+		return allSettings, warnings, fmt.Errorf("%w: %w", errWriteConfigToFile, err)
 	}
 	const mode = fs.FileMode(0600)
 	err = r.writeFile(filePath, buffer.Bytes(), mode)
 	if err != nil {
-		return allSettings, warnings, fmt.Errorf("%w: %s", errWriteConfigToFile, err)
+		return allSettings, warnings, fmt.Errorf("%w: %w", errWriteConfigToFile, err)
 	}
 
 	return allSettings, warnings, nil
@@ -111,16 +111,17 @@ func extractAllSettings(jsonBytes []byte) (
 	rawConfig := struct {
 		Settings []json.RawMessage `json:"settings"`
 	}{}
-	if err := json.Unmarshal(jsonBytes, &config); err != nil {
-		return nil, nil, fmt.Errorf("%w: %s", errUnmarshalCommon, err)
+	err = json.Unmarshal(jsonBytes, &config)
+	if err != nil {
+		return nil, nil, fmt.Errorf("%w: %w", errUnmarshalCommon, err)
 	}
-	if err := json.Unmarshal(jsonBytes, &rawConfig); err != nil {
-		return nil, nil, fmt.Errorf("%w: %s", errUnmarshalRaw, err)
+	err = json.Unmarshal(jsonBytes, &rawConfig)
+	if err != nil {
+		return nil, nil, fmt.Errorf("%w: %w", errUnmarshalRaw, err)
 	}
-	matcher := regex.NewMatcher()
 
 	for i, common := range config.CommonSettings {
-		newSettings, newWarnings, err := makeSettingsFromObject(common, rawConfig.Settings[i], matcher)
+		newSettings, newWarnings, err := makeSettingsFromObject(common, rawConfig.Settings[i])
 		warnings = append(warnings, newWarnings...)
 		if err != nil {
 			return nil, warnings, err
@@ -131,13 +132,12 @@ func extractAllSettings(jsonBytes []byte) (
 	return allSettings, warnings, nil
 }
 
-func makeSettingsFromObject(common commonSettings, rawSettings json.RawMessage,
-	matcher regex.Matcher) (
+func makeSettingsFromObject(common commonSettings, rawSettings json.RawMessage) (
 	settingsSlice []settings.Settings, warnings []string, err error) {
 	provider := models.Provider(common.Provider)
 	if provider == constants.DuckDNS { // only hosts, no domain
-		if len(common.Domain) > 0 { // retro compatibility
-			if len(common.Host) == 0 {
+		if common.Domain != "" { // retro compatibility
+			if common.Host == "" {
 				common.Host = strings.TrimSuffix(common.Domain, ".duckdns.org")
 				warnings = append(warnings,
 					fmt.Sprintf("DuckDNS record should have %q specified as host instead of %q as domain",
@@ -151,7 +151,7 @@ func makeSettingsFromObject(common commonSettings, rawSettings json.RawMessage,
 	}
 	hosts := strings.Split(common.Host, ",")
 
-	if len(common.IPVersion) == 0 {
+	if common.IPVersion == "" {
 		common.IPVersion = ipversion.IP4or6.String()
 	}
 	ipVersion, err := ipversion.Parse(common.IPVersion)
@@ -162,7 +162,7 @@ func makeSettingsFromObject(common commonSettings, rawSettings json.RawMessage,
 	settingsSlice = make([]settings.Settings, len(hosts))
 	for i, host := range hosts {
 		settingsSlice[i], err = settings.New(provider, rawSettings, common.Domain,
-			host, ipVersion, matcher)
+			host, ipVersion)
 		if err != nil {
 			return nil, warnings, err
 		}

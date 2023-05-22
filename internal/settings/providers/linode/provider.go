@@ -20,7 +20,7 @@ import (
 	"github.com/qdm12/ddns-updater/pkg/publicip/ipversion"
 )
 
-type provider struct {
+type Provider struct {
 	domain    string
 	host      string
 	ipVersion ipversion.IPVersion
@@ -28,57 +28,59 @@ type provider struct {
 }
 
 func New(data json.RawMessage, domain, host string,
-	ipVersion ipversion.IPVersion) (p *provider, err error) {
+	ipVersion ipversion.IPVersion) (p *Provider, err error) {
 	extraSettings := struct {
 		Token string `json:"token"`
 	}{}
-	if err := json.Unmarshal(data, &extraSettings); err != nil {
+	err = json.Unmarshal(data, &extraSettings)
+	if err != nil {
 		return nil, err
 	}
-	p = &provider{
+	p = &Provider{
 		domain:    domain,
 		host:      host,
 		ipVersion: ipVersion,
 		token:     extraSettings.Token,
 	}
-	if err := p.isValid(); err != nil {
+	err = p.isValid()
+	if err != nil {
 		return nil, err
 	}
 	return p, nil
 }
 
-func (p *provider) isValid() error {
-	if len(p.token) == 0 {
-		return errors.ErrEmptyToken
+func (p *Provider) isValid() error {
+	if p.token == "" {
+		return fmt.Errorf("%w", errors.ErrEmptyToken)
 	}
 	return nil
 }
 
-func (p *provider) String() string {
+func (p *Provider) String() string {
 	return utils.ToString(p.domain, p.host, constants.Linode, p.ipVersion)
 }
 
-func (p *provider) Domain() string {
+func (p *Provider) Domain() string {
 	return p.domain
 }
 
-func (p *provider) Host() string {
+func (p *Provider) Host() string {
 	return p.host
 }
 
-func (p *provider) IPVersion() ipversion.IPVersion {
+func (p *Provider) IPVersion() ipversion.IPVersion {
 	return p.ipVersion
 }
 
-func (p *provider) Proxied() bool {
+func (p *Provider) Proxied() bool {
 	return false
 }
 
-func (p *provider) BuildDomainName() string {
+func (p *Provider) BuildDomainName() string {
 	return utils.BuildDomainName(p.host, p.domain)
 }
 
-func (p *provider) HTML() models.HTMLRow {
+func (p *Provider) HTML() models.HTMLRow {
 	return models.HTMLRow{
 		Domain:    models.HTML(fmt.Sprintf("<a href=\"http://%s\">%s</a>", p.BuildDomainName(), p.BuildDomainName())),
 		Host:      models.HTML(p.Host()),
@@ -88,10 +90,10 @@ func (p *provider) HTML() models.HTMLRow {
 }
 
 // Using https://www.linode.com/docs/api/domains/
-func (p *provider) Update(ctx context.Context, client *http.Client, ip net.IP) (newIP net.IP, err error) {
+func (p *Provider) Update(ctx context.Context, client *http.Client, ip net.IP) (newIP net.IP, err error) {
 	domainID, err := p.getDomainID(ctx, client)
 	if err != nil {
-		return nil, fmt.Errorf("%w: %s", errors.ErrGetDomainID, err)
+		return nil, fmt.Errorf("%w: %w", errors.ErrGetDomainID, err)
 	}
 
 	recordType := constants.A
@@ -103,15 +105,16 @@ func (p *provider) Update(ctx context.Context, client *http.Client, ip net.IP) (
 	if goerrors.Is(err, errors.ErrNotFound) {
 		err := p.createRecord(ctx, client, domainID, recordType, ip)
 		if err != nil {
-			return nil, fmt.Errorf("%w: %s", errors.ErrCreateRecord, err)
+			return nil, fmt.Errorf("%w: %w", errors.ErrCreateRecord, err)
 		}
 		return ip, nil
 	} else if err != nil {
-		return nil, fmt.Errorf("%w: %s", errors.ErrGetRecordID, err)
+		return nil, fmt.Errorf("%w: %w", errors.ErrGetRecordID, err)
 	}
 
-	if err := p.updateRecord(ctx, client, domainID, recordID, ip); err != nil {
-		return nil, fmt.Errorf("%w: %s", errors.ErrUpdateRecord, err)
+	err = p.updateRecord(ctx, client, domainID, recordID, ip)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %w", errors.ErrUpdateRecord, err)
 	}
 
 	return ip, nil
@@ -124,13 +127,13 @@ type linodeErrors struct {
 	} `json:"errors"`
 }
 
-func (p *provider) setHeaders(request *http.Request) {
+func (p *Provider) setHeaders(request *http.Request) {
 	headers.SetUserAgent(request)
 	headers.SetContentType(request, "application/json")
 	headers.SetAuthBearer(request, p.token)
 }
 
-func (p *provider) getDomainID(ctx context.Context, client *http.Client) (domainID int, err error) {
+func (p *Provider) getDomainID(ctx context.Context, client *http.Client) (domainID int, err error) {
 	u := url.URL{
 		Scheme: "https",
 		Host:   "api.linode.com",
@@ -153,7 +156,7 @@ func (p *provider) getDomainID(ctx context.Context, client *http.Client) (domain
 
 	if response.StatusCode != http.StatusOK {
 		err = fmt.Errorf("%w: %d", errors.ErrBadHTTPStatus, response.StatusCode)
-		return 0, fmt.Errorf("%w: %s", err, p.getError(response.Body))
+		return 0, fmt.Errorf("%w: %s", err, p.getErrorMessage(response.Body))
 	}
 
 	decoder := json.NewDecoder(response.Body)
@@ -164,14 +167,15 @@ func (p *provider) getDomainID(ctx context.Context, client *http.Client) (domain
 			Status string `json:"status"`
 		} `json:"data"`
 	}
-	if err := decoder.Decode(&obj); err != nil {
+	err = decoder.Decode(&obj)
+	if err != nil {
 		return 0, err
 	}
 
 	domains := obj.Data
 	switch len(domains) {
 	case 0:
-		return 0, errors.ErrNotFound
+		return 0, fmt.Errorf("%w", errors.ErrNotFound)
 	case 1:
 	default:
 		return 0, fmt.Errorf("%w: %d records instead of 1",
@@ -179,17 +183,17 @@ func (p *provider) getDomainID(ctx context.Context, client *http.Client) (domain
 	}
 
 	if domains[0].Status == "disabled" {
-		return 0, errors.ErrDomainDisabled
+		return 0, fmt.Errorf("%w", errors.ErrDomainDisabled)
 	}
 
 	if domains[0].ID == nil {
-		return 0, errors.ErrDomainIDNotFound
+		return 0, fmt.Errorf("%w", errors.ErrDomainIDNotFound)
 	}
 
 	return *domains[0].ID, nil
 }
 
-func (p *provider) getRecordID(ctx context.Context, client *http.Client,
+func (p *Provider) getRecordID(ctx context.Context, client *http.Client,
 	domainID int, recordType string) (recordID int, err error) {
 	u := url.URL{
 		Scheme: "https",
@@ -212,7 +216,7 @@ func (p *provider) getRecordID(ctx context.Context, client *http.Client,
 
 	if response.StatusCode != http.StatusOK {
 		err = fmt.Errorf("%w: %d", errors.ErrBadHTTPStatus, response.StatusCode)
-		return 0, fmt.Errorf("%w: %s", err, p.getError(response.Body))
+		return 0, fmt.Errorf("%w: %s", err, p.getErrorMessage(response.Body))
 	}
 
 	decoder := json.NewDecoder(response.Body)
@@ -223,8 +227,9 @@ func (p *provider) getRecordID(ctx context.Context, client *http.Client,
 			Type string `json:"type"`
 		} `json:"data"`
 	}
-	if err := decoder.Decode(&obj); err != nil {
-		return 0, fmt.Errorf("%w: %s", errors.ErrUnmarshalResponse, err)
+	err = decoder.Decode(&obj)
+	if err != nil {
+		return 0, fmt.Errorf("%w: %w", errors.ErrUnmarshalResponse, err)
 	}
 
 	for _, domainRecord := range obj.Data {
@@ -233,10 +238,10 @@ func (p *provider) getRecordID(ctx context.Context, client *http.Client,
 		}
 	}
 
-	return 0, errors.ErrNotFound
+	return 0, fmt.Errorf("%w", errors.ErrNotFound)
 }
 
-func (p *provider) createRecord(ctx context.Context, client *http.Client,
+func (p *Provider) createRecord(ctx context.Context, client *http.Client,
 	domainID int, recordType string, ip net.IP) (err error) {
 	u := url.URL{
 		Scheme: "https",
@@ -252,13 +257,14 @@ func (p *provider) createRecord(ctx context.Context, client *http.Client,
 
 	requestData := domainRecord{
 		Type: recordType,
-		Host: p.host,
+		Host: p.BuildDomainName(),
 		IP:   ip.String(),
 	}
 	buffer := bytes.NewBuffer(nil)
 	encoder := json.NewEncoder(buffer)
-	if err := encoder.Encode(requestData); err != nil {
-		return fmt.Errorf("%w: %s", errors.ErrRequestMarshal, err)
+	err = encoder.Encode(requestData)
+	if err != nil {
+		return fmt.Errorf("%w: %w", errors.ErrRequestMarshal, err)
 	}
 
 	request, err := http.NewRequestWithContext(ctx, http.MethodPost, u.String(), buffer)
@@ -276,13 +282,14 @@ func (p *provider) createRecord(ctx context.Context, client *http.Client,
 
 	if response.StatusCode != http.StatusOK {
 		err = fmt.Errorf("%w: %d", errors.ErrBadHTTPStatus, response.StatusCode)
-		return fmt.Errorf("%w: %s", err, p.getError(response.Body))
+		return fmt.Errorf("%w: %s", err, p.getErrorMessage(response.Body))
 	}
 
 	var responseData domainRecord
 	decoder := json.NewDecoder(response.Body)
-	if err := decoder.Decode(&responseData); err != nil {
-		return fmt.Errorf("%w: %s", errors.ErrUnmarshalResponse, err)
+	err = decoder.Decode(&responseData)
+	if err != nil {
+		return fmt.Errorf("%w: %w", errors.ErrUnmarshalResponse, err)
 	}
 
 	newIP := net.ParseIP(responseData.IP)
@@ -295,7 +302,7 @@ func (p *provider) createRecord(ctx context.Context, client *http.Client,
 	return nil
 }
 
-func (p *provider) updateRecord(ctx context.Context, client *http.Client,
+func (p *Provider) updateRecord(ctx context.Context, client *http.Client,
 	domainID, recordID int, ip net.IP) (err error) {
 	u := url.URL{
 		Scheme: "https",
@@ -310,8 +317,9 @@ func (p *provider) updateRecord(ctx context.Context, client *http.Client,
 	}
 	buffer := bytes.NewBuffer(nil)
 	encoder := json.NewEncoder(buffer)
-	if err := encoder.Encode(data); err != nil {
-		return fmt.Errorf("%w: %s", errors.ErrRequestMarshal, err)
+	err = encoder.Encode(data)
+	if err != nil {
+		return fmt.Errorf("%w: %w", errors.ErrRequestMarshal, err)
 	}
 
 	request, err := http.NewRequestWithContext(ctx, http.MethodPut, u.String(), buffer)
@@ -329,13 +337,14 @@ func (p *provider) updateRecord(ctx context.Context, client *http.Client,
 
 	if response.StatusCode != http.StatusOK {
 		err = fmt.Errorf("%w: %d", errors.ErrBadHTTPStatus, response.StatusCode)
-		return fmt.Errorf("%w: %s", err, p.getError(response.Body))
+		return fmt.Errorf("%w: %s", err, p.getErrorMessage(response.Body))
 	}
 
 	data.IP = ""
 	decoder := json.NewDecoder(response.Body)
-	if err := decoder.Decode(&data); err != nil {
-		return fmt.Errorf("%w: %s", errors.ErrUnmarshalResponse, err)
+	err = decoder.Decode(&data)
+	if err != nil {
+		return fmt.Errorf("%w: %w", errors.ErrUnmarshalResponse, err)
 	}
 
 	newIP := net.ParseIP(data.IP)
@@ -348,14 +357,15 @@ func (p *provider) updateRecord(ctx context.Context, client *http.Client,
 	return nil
 }
 
-func (p *provider) getError(body io.Reader) (err error) {
+func (p *Provider) getErrorMessage(body io.Reader) (message string) {
 	var errorObj linodeErrors
 	b, err := io.ReadAll(body)
 	if err != nil {
-		return err
+		return fmt.Sprintf("reading body: %s", err)
 	}
-	if err := json.Unmarshal(b, &errorObj); err != nil {
-		return fmt.Errorf("%s", utils.ToSingleLine(string(b)))
+	err = json.Unmarshal(b, &errorObj)
+	if err != nil {
+		return utils.ToSingleLine(string(b))
 	}
-	return fmt.Errorf("%v", errorObj)
+	return fmt.Sprintf("%v", errorObj)
 }
